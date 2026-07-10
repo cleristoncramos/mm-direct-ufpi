@@ -25,7 +25,7 @@ const reactApp = path.join(__dirname, './web');
 
 // listar diretórios do react app
 const directories = fs.readdirSync(reactApp)
-// se existir não existir node_modules, instalar as dependências
+// se não existir node_modules, instalar as dependências
 if (!directories.includes('node_modules')) {
   child_process.execSync('npm install', {
     cwd: reactApp
@@ -44,7 +44,6 @@ reactProcess.stdout.on('data', (data) => {
   console.log(output);
 });
 
-
 let rootPath = null; // Caminho do arquivo CSV a ser processado
 // ler arquivo json config.json
 const config = await JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
@@ -52,9 +51,7 @@ const config = await JSON.parse(fs.readFileSync(path.join(__dirname, 'config.jso
 rootPath = os.homedir() + config.path;
 
 // Caminho do arquivo CSV a ser processado
-//path.join(__dirname, '../../MM-DIRECT/src/datasets/datasets.csv');
 const inputPath = rootPath + "/src/datasets/datasets.csv"
-// '../../MM-DIRECT/src/system_monitoring/system_monitoring.csv'
 const pathCpu = rootPath + "/src/system_monitoring/system_monitoring.csv"
 
 // Variáveis de controle
@@ -85,12 +82,11 @@ const wss = new WebSocketServer({ server }, () => {
   rota para o dataset de uso de cpu: ws://localhost:8080/cpu
   `);
 });
+
 // rota para configurar o arquivo de configuração do MM-DIRECT
 app.post('/config', express.json(), (req, res) => {
   const config = req.body;
-
   modifyConfigFile(config, rootPath);
-
   res.json(config);
 });
 
@@ -106,23 +102,18 @@ const processaCSV = async (ws, inputPath) => {
 
       // Processar cada linha do CSV
       if (total === 1) {
-        // Obter o tempo de inicialização do banco de dados a partir da segunda linha
         database_startup_time = parseInt(row.startTime);
       } else if (total >= 3) {
         if (row.type !== '0' && !isNaN(row.finishTime)) {
-          // Calcular o tempo em segundos a partir do tempo de término e do tempo de inicialização
           const tempoTermino = parseInt(row.finishTime);
           const tempoEmSegundos = Math.floor((tempoTermino - database_startup_time) / 1000000);
 
           if (tempoEmSegundos >= 0) {
-            // Verificar se o array para esse segundo já existe
             const entryIndex = contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
 
             if (entryIndex === -1) {
-              // Se não existe, adicionar um novo array de contagem
               contagemComandos.push([tempoEmSegundos, 1]);
             } else {
-              // Se existe, incrementar a contagem de comandos
               contagemComandos[entryIndex][1]++;
             }
           }
@@ -141,8 +132,6 @@ const processaCSV = async (ws, inputPath) => {
     })
     .on('end', () => {
       console.log('CSV file successfully processed');
-      // Enviar o último elemento do array para a conexão WebSocket
-      // ws.send(JSON.stringify(contagemComandos[contagemComandos.length - 1]));
       lendoArquivo = false;
     });
 }
@@ -157,11 +146,9 @@ const processaLatencia = async (ws, inputPath) => {
       totalLatencia++;
       lendoArquivo = true;
 
-      // Processar cada linha do CSV
       if (totalLatencia === 1) {
         database_startup_time_latencia = parseInt(row.startTime);
       } else if (totalLatencia >= 3) {
-        // vericar se a latência é maior que 0
         if (parseInt(row.type) != '0') {
           const num = parseInt((parseInt(row.startTime) - database_startup_time_latencia) / 1000000);
           if (row.type === 'N') {
@@ -173,7 +160,6 @@ const processaLatencia = async (ws, inputPath) => {
             x2.push(num);
             y2.push(parseInt(row.latency));
             ws.send(JSON.stringify({ x2: [num, parseInt(row.latency)] }));
-
           }
         }
       }
@@ -194,7 +180,7 @@ const processaCpu = async (ws, pathCpu) => {
     console.log(databaseStartupCpu)
     console.log(lines)
 
-    lines.splice(0, 2); // Remove header and database startup information
+    lines.splice(0, 2); 
 
     for (let i = 0; i < lines.length; i++) {
       const linha = lines[i].split(';');
@@ -202,7 +188,6 @@ const processaCpu = async (ws, pathCpu) => {
         const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
         x.push(num);
         y.push(parseFloat(linha[1]));
-
         ws.send(JSON.stringify([num, parseFloat(linha[1])]));
       }
     }
@@ -220,7 +205,7 @@ const processaMemoria = async (ws, pathMemoria) => {
 
     databaseStartupMemoria = databaseStartupTime;
 
-    lines.splice(0, 2); // Remove header and database startup information
+    lines.splice(0, 2); 
 
     for (let i = 0; i < lines.length; i++) {
       const linha = lines[i].split(';');
@@ -228,12 +213,10 @@ const processaMemoria = async (ws, pathMemoria) => {
         const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
         x.push(num);
         y.push(parseFloat(linha[2]));
-
         ws.send(JSON.stringify([num, parseInt(lines[2])]));
       }
     }
   }
-
 }
 
 // conexão websocket
@@ -243,34 +226,32 @@ wss.on('connection', async (ws, req) => {
   // rota websocket para o dataset de comandos por segundo
   if (req.url === '/data') {
     const tail = new Tail(inputPath);
+    
+    tail.on("error", function(error) {
+      console.log('Aviso do Monitor (Tail - Data): Arquivo datasets.csv foi movido ou recriado.');
+      try { tail.unwatch(); } catch (e) {}
+    });
 
     await processaCSV(ws, inputPath);
 
     tail.on("line", function (data) {
       const line = data.split(',');
-
       const endTime = parseInt(line[2]);
-      const startTime = parseInt(line[1]);
 
       if (line[0] !== '0' && !isNaN(endTime)) {
-        // Calcular o tempo em segundos a partir do tempo de término e do tempo de inicialização
         const tempoEmSegundos = Math.floor((endTime - database_startup_time) / 1000000);
 
         if (tempoEmSegundos >= 0) {
-          // Verificar se o array para esse segundo já existe
           const entryIndex = contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
 
           if (entryIndex === -1) {
-            // Se não existe, adicionar um novo array de contagem
             contagemComandos.push([tempoEmSegundos, 1]);
           } else {
-            // Se existe, incrementar a contagem de comandos
             contagemComandos[entryIndex][1]++;
           }
         }
       }
 
-      // Verificar se o tamanho do array aumentou e enviar o penúltimo elemento apenas uma vez
       for (let i = 0; i < contagemComandos.length; i++) {
         if (contagemComandos.length > arrayParaVerificarSeJaFoiEnviado.length) {
           if (i === contagemComandos.length - 2) {
@@ -281,26 +262,28 @@ wss.on('connection', async (ws, req) => {
       }
     });
 
-    // se o usuário fechar a conexão, encerre o processo do servidor Redis e pare de ler o arquivo CSV
     ws.on('close', () => {
-      tail.unwatch();
-      // limpar os arrays
+      try { tail.unwatch(); } catch (e) {}
       contagemComandos.length = 0;
       arrayParaVerificarSeJaFoiEnviado.length = 0;
       total = 0;
       database_startup_time = 0;
     });
   }
+  
   // rota websocket para o dataset de uso de cpu
   else if (req.url === '/cpu') {
-
     await processaCpu(ws, pathCpu);
 
     const tail = new Tail(pathCpu);
 
+    tail.on("error", function(error) {
+      console.log('Aviso do Monitor (Tail - CPU): Arquivo system_monitoring.csv foi movido ou recriado.');
+      try { tail.unwatch(); } catch (e) {}
+    });
+
     tail.on("line", function (data) {
       const lines = data.split(';')
-
       const endTime = parseInt(lines[0]);
 
       if (lines[0] === "Database startup") {
@@ -311,59 +294,39 @@ wss.on('connection', async (ws, req) => {
         const num = Math.floor((endTime - databaseStartupCpu) / 1000000);
         x.push(num);
         y.push(parseFloat(lines[1]));
-
         ws.send(JSON.stringify([num, parseFloat(lines[1])]));
       }
     });
 
-
-    // se o usuário fechar a conexão, encerre o processo do servidor Redis e pare de ler o arquivo CSV
     ws.on('close', () => {
-      tail.unwatch();
-      // limpar os arrays
+      try { tail.unwatch(); } catch (e) {}
       x.length = 0;
       y.length = 0;
     });
-
   }
-  // rotar para iniciar o servidor MM-DIRECT
+  
+  // rota para iniciar o servidor MM-DIRECT
   else if (req.url === '/start') {
     const redisServerPath = path.join(rootPath, '/src');
-
-    // Navegue até a pasta onde o redis-server está localizado
     process.chdir(redisServerPath);
 
-    // apagar o arquivo de log datasets.csv verificando se ele existe
     const logFile = path.join(redisServerPath, 'datasets/datasets.csv');
-
     if (fs.existsSync(logFile)) {
       fs.unlinkSync(logFile);
     }
 
-    // iniciar o servidor MM-DIRECT
     const child = child_process.spawn('./redis-server');
 
     child.on('error', (err) => {
       console.error(`Erro ao iniciar o servidor Redis: ${err}`);
     });
 
-    /*
-        child.on('exit', (code, signal) => {
-          console.log(`Servidor Redis encerrado com código ${code} e sinal ${signal}`);
-          ws.send('Redis server stopped');
-          ws.close();
-        });
-    */
-    // ouvir o evento de saída do processo
     child.stdout.on('data', (data) => {
       ws.send('Redis server started');
       const output = data.toString();
       console.log(output);
       ws.send(output);
 
-      // Use uma expressão regular para verificar a mensagem
-      const regex = /Memtier benchmark execution finished: \d+\.\d+ seconds\./;
-      // verificar se está gerando "Generating information about executed database commands ..."
       const regex2 = /Generating information about executed database commands .../;
       const regex3 = /Generating system monitoring .../;
 
@@ -376,25 +339,16 @@ wss.on('connection', async (ws, req) => {
         console.log('Gerando monitoramento do sistema ...');
         ws.send('Generating system monitoring');
       }
-
-      /*
-      if (regex.test(output)) {
-        console.log('Encerrando o servidor Redis...');
-        child.kill(); // Encerre o processo do servidor Redis
-      }
-      */
     });
 
-    // se o usuário fechar a conexão, encerre o processo do servidor Redis
     ws.on('close', () => {
       child.kill();
     });
   }
+  
   // rota para parar o servidor MM-DIRECT
   else if (req.url === '/stop') {
     const redisServerPath = path.join(__dirname, '../../MM-DIRECT/src');
-
-    // Navegue até a pasta onde o redis-server está localizado
     process.chdir(redisServerPath);
 
     const child = child_process.spawn('./redis-cli', ['shutdown']);
@@ -415,7 +369,6 @@ wss.on('connection', async (ws, req) => {
       console.log(output);
     });
 
-    // se o usuário fechar a conexão, encerre o processo do servidor Redis
     ws.on('close', () => {
       child.kill();
     });
@@ -424,11 +377,15 @@ wss.on('connection', async (ws, req) => {
   else if (req.url === '/memory') {
     const tail = new Tail(pathCpu);
 
+    tail.on("error", function(error) {
+      console.log('Aviso do Monitor (Tail - Memory): Arquivo system_monitoring.csv foi movido ou recriado.');
+      try { tail.unwatch(); } catch (e) {}
+    });
+
     await processaMemoria(ws, pathCpu);
 
     tail.on("line", function (data) {
       const lines = data.split(';')
-
       const endTime = parseInt(lines[0]);
 
       if (lines[0] === "Database startup") {
@@ -439,21 +396,27 @@ wss.on('connection', async (ws, req) => {
         const num = Math.floor((endTime - databaseStartupMemoria) / 1000000);
         x.push(num);
         y.push(parseFloat(lines[2]));
-
         ws.send(JSON.stringify([num, parseInt(lines[2])]));
       }
+    });
+
+    ws.on('close', () => {
+      try { tail.unwatch(); } catch (e) {}
     });
   }
 
   else if (req.url === '/latencia') {
     await processaLatencia(ws, inputPath);
-
     console.log('latencia')
     const tail = new Tail(inputPath);
 
+    tail.on("error", function(error) {
+      console.log('Aviso do Monitor (Tail - Latência): Arquivo datasets.csv foi movido ou recriado.');
+      try { tail.unwatch(); } catch (e) {}
+    });
+
     tail.on("line", function (data) {
       const lines = data.split(',')
-
       const endTime = parseInt(lines[2]);
 
       if (lines[0] !== '0' && !isNaN(endTime)) {
@@ -470,10 +433,13 @@ wss.on('connection', async (ws, req) => {
           ws.send(JSON.stringify({ x2: [num, parseInt(lines[4])] }));
         }
       }
-    
     });
 
+    ws.on('close', () => {
+      try { tail.unwatch(); } catch (e) {}
+    });
   }
+  
   else {
     ws.send('Invalid URL');
   }

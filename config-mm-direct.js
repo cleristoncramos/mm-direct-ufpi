@@ -209,7 +209,7 @@ time_tostop_benchmarking = 0;
 //	uniform random key pattern (R). 
 //	Below are some examples of parameters. 
 //
-memtier_benchmark_parameters = " --hide-histogram -n 5000 --key-prefix='redisIR-' --key-minimum=1 --key-maximum=5000 --command='set  __key__ __data__' --command-ratio=5000 --command-key-pattern=S";
+memtier_benchmark_parameters = " --hide-histogram -n 5000 --key-prefix='redisIR-' --key-minimum=1 --key-maximum=5000 --command='set __key__ __data__' --command-ratio=5000 --command-key-pattern=S";
 //
 //
 /////////////////////////////////////////////////////////////////////////////////////////
