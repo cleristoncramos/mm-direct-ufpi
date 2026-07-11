@@ -1,6 +1,4 @@
 import { useState } from "react";
-import OptionsBoard from "./OptionsBoard";
-import { TextInput, SwitchInput, RangeInput } from "./InputTypes";
 import IndexerOptions from "./IndexerOptions";
 import CheckpointerOptions from "./CheckpointerOptions";
 import FailureOptions from "./FailureOptions";
@@ -13,10 +11,6 @@ import systemMonitoringOptions from "./SystemMonitoringOptions";
 
 const SetupForm = ({ submitFunction, resetFunction }: any) => {
     const [selectedPanel, setSelectedPanel] = useState<string>("indexeroptions");
-
-    const filterOptionPanel = (panelName: string) => {
-        setSelectedPanel(panelName)
-    }
 
 
     return (

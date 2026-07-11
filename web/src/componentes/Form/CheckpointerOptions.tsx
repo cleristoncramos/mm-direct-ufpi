@@ -1,5 +1,5 @@
 import OptionsBoard from "./OptionsBoard";
-import { TextInput, SwitchInput, RangeInput } from "./InputTypes";
+import { SwitchInput, RangeInput } from "./InputTypes";
 
 const CheckpointerOptions = () => {
     return (

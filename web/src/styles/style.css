@@ -235,3 +235,60 @@ input [type="range"]:hover {
     margin: 0;
     padding: 0;
 } */
+
+/* Otimização de Impressão para Relatórios Científicos */
+.print-report {
+    display: none !important;
+}
+
+@media print {
+    body, html {
+        background-color: white !important;
+        color: black !important;
+        font-family: "Times New Roman", Times, serif !important;
+    }
+    
+    /* Oculta tudo na impressão por padrão */
+    body * {
+        visibility: hidden !important;
+    }
+    
+    /* Torna apenas a classe print-report e seus descendentes visíveis */
+    .print-report, .print-report * {
+        visibility: visible !important;
+    }
+    
+    /* Retira o contêiner do fluxo de posicionamento flex original */
+    .print-report {
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        display: block !important;
+        background-color: white !important;
+        color: black !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    
+    table {
+        border-collapse: collapse !important;
+        width: 100% !important;
+        margin-top: 10px !important;
+        margin-bottom: 15px !important;
+    }
+    
+    th, td {
+        border-top: 1px solid black !important;
+        border-bottom: 1px solid black !important;
+        padding: 6px 8px !important;
+        font-size: 11px !important;
+        color: black !important;
+    }
+    
+    th {
+        border-bottom: 2px solid black !important;
+        font-weight: bold !important;
+        background-color: #f1f5f9 !important;
+    }
+}

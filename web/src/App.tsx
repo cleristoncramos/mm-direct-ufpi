@@ -2,7 +2,7 @@ import { useState } from "react";
 import NavBar from "./componentes/NavBar";
 import SetupPanel from "./componentes/Form/SetupPanel";
 import ChartBoard from "./componentes/Charts/ChartBoard";
-
+import HistoryPanel from "./componentes/HistoryPanel";
 
 const App = () => {
     const [loadingServer, setLoadingServer] = useState<boolean>(false);
@@ -11,20 +11,16 @@ const App = () => {
         useState<boolean>(false);
     const [startConnection, setStartConnection] = useState<WebSocket>();
     const [logs, setLogs] = useState<string[]>([]);
+    const [configData, setConfigData] = useState<any>({});
+    
+    // Controla a aba atual quando fora de execução
+    const [currentTab, setCurrentTab] = useState<"experiment" | "history">("experiment");
 
-    const initializeServer = () => {
-        console.log("Iniciando servidor");
-
-        setLoadingServer(!loadingServer);
-
-        const url = "teste_start";
-
-        // const url: string =
-        //     params.includes("graph-cpu") && params.includes("graph-transf")
-        //         ? "teste_start"
-        //         : params.includes("graph-cpu")
-        //             ? "teste_cpu"
-        //             : "teste_data";
+    const initializeServer = (params: any) => {
+        console.log("Iniciando servidor com config:", params);
+        setConfigData(params);
+        setLoadingServer(true);
+        setLogs([]);
 
         const ws = new WebSocket(`ws://localhost:8081/start`);
 
@@ -46,54 +42,115 @@ const App = () => {
             }
         };
 
+        ws.onerror = (err) => {
+            console.error("Erro na conexão ws://localhost:8081/start:", err);
+            setLoadingServer(false);
+        };
+
         setStartConnection(ws);
     };
 
     const onReloadButtuonClick = (e: Event, connectionsArray: WebSocket[]) => {
+        if (e) {
+            console.log("Reiniciando experimento...");
+        }
         connectionsArray.forEach((conection: WebSocket) => conection.close())
         startConnection?.close()
         setLogs([]);
         setGenerateArquive(false);
         setGenerateArquiveMonitoring(false);
+        setConfigData({});
+        // Retorna para a aba de novo experimento ao reiniciar
+        setCurrentTab("experiment");
     };
 
-
     return (
-        <div>
-            <NavBar />
+        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+            {/* Oculta o NavBar durante a impressão do PDF */}
+            <div className="print:hidden">
+                <NavBar />
+            </div>
 
-            <main>
+            <main className="flex-1 flex flex-col justify-start">
+                
+                {/* Abas Superiores de Controle (Ocultas durante a execução do experimento ou impressão) */}
+                {!generateArquive && !generateArquiveMonitoring && !loadingServer && (
+                    <div className="print:hidden flex justify-center bg-slate-900 border-b border-slate-800 px-4 py-2 space-x-4">
+                        <button
+                            onClick={() => setCurrentTab("experiment")}
+                            className={`px-4 py-2 text-xs font-semibold rounded-lg transition ${
+                                currentTab === "experiment"
+                                    ? "bg-blue-600 text-white"
+                                    : "text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-850"
+                            }`}
+                        >
+                            Novo Experimento
+                        </button>
+                        <button
+                            onClick={() => setCurrentTab("history")}
+                            className={`px-4 py-2 text-xs font-semibold rounded-lg transition ${
+                                currentTab === "history"
+                                    ? "bg-blue-600 text-white"
+                                    : "text-slate-400 hover:text-slate-200 bg-slate-950/40 border border-slate-850"
+                            }`}
+                        >
+                            Histórico & Comparação
+                        </button>
+                    </div>
+                )}
 
+                {/* Exibição Condicional de Telas */}
                 {!generateArquive && !generateArquiveMonitoring && (
-                    <SetupPanel initServer={initializeServer} />
+                    currentTab === "experiment" ? (
+                        <div className="container mx-auto max-w-4xl px-4 py-8 print:hidden">
+                            <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow-2xl mb-8 text-center space-y-4">
+                                <h2 className="text-3xl font-extrabold text-white tracking-tight">
+                                    Painel de Controle de Validação MM-DIRECT
+                                </h2>
+                                <p className="text-slate-400 text-sm max-w-2xl mx-auto leading-relaxed">
+                                    Plataforma de execução e instrumentação científica para o banco de dados MM-DIRECT. 
+                                    Configure o ensaio utilizando os parâmetros abaixo e inicie a carga para gerar a telemetria em tempo real.
+                                </p>
+                            </div>
+                            <SetupPanel initServer={initializeServer} />
+                        </div>
+                    ) : (
+                        <HistoryPanel onBack={() => setCurrentTab("experiment")} />
+                    )
                 )}
 
                 {loadingServer && (
-                    <div className="flex flex-row fixed top-0 w-full h-full pointer-events-none">
-                        <div className="h-fit sm:w-[90vw] md:w-full max-w-xl sm:max-w-lg md:max-w-2xl lg:max-w-lg py-10 px-7 mx-auto my-auto space-y-5 bg-slate-300 rounded-lg shadow-md text-center">
-                            <p className="animate-pulse text-slate-800 text-3xl font-mono">
-                                loading...
-                            </p>
+                    <div className="fixed inset-0 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm z-50 print:hidden">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-sm text-center shadow-2xl space-y-6">
+                            <div className="relative w-16 h-16 mx-auto">
+                                <div className="absolute inset-0 rounded-full border-4 border-slate-800"></div>
+                                <div className="absolute inset-0 rounded-full border-4 border-blue-500 border-t-transparent animate-spin"></div>
+                            </div>
+                            <div className="space-y-2">
+                                <h3 className="text-lg font-bold text-white">Inicializando Ensaio...</h3>
+                                <p className="text-xs text-slate-400">Higienizando pipeline e disparando MM-DIRECT em segundo plano.</p>
+                            </div>
+                            <div className="bg-slate-950 rounded-lg p-3 max-h-32 overflow-y-auto text-left font-mono text-[10px] text-blue-400 border border-slate-850">
+                                {logs.length > 0 ? logs[logs.length - 1] : "Aguardando sinal do servidor..."}
+                            </div>
                         </div>
                     </div>
-
                 )}
 
                 {generateArquive && (
-                    <ChartBoard
-                        cpuChart={generateArquiveMonitoring}
-                        transferChart={generateArquive}
-                        terminalLog={logs}
-                        onReloadButtonClick={onReloadButtuonClick}
-                    />
+                    <div className="print:hidden">
+                        <ChartBoard
+                            cpuChart={generateArquiveMonitoring}
+                            transferChart={generateArquive}
+                            terminalLog={logs}
+                            onReloadButtonClick={onReloadButtuonClick}
+                            configData={configData}
+                        />
+                    </div>
                 )}
             </main>
-
         </div>
     );
 }
-    ;
 
 export default App;
-
-

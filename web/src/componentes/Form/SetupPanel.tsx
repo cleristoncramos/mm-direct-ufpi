@@ -5,15 +5,25 @@ const SetupPanel = ({ initServer }: any) => {
         e.preventDefault();
 
         const form = e.target.form;
-        const formData = new FormData(form);
-        const request: any = {}
+        const request: any = {};
 
-        formData.forEach(function (value, key) {
-            if (value !== "") {
-                request[key] = value;
+        // 1. Coleta campos de texto e sliders
+        const textAndRangeInputs = form.querySelectorAll("input[type='text'], input[type='range']");
+        textAndRangeInputs.forEach((input: any) => {
+            if (input.name && input.value !== "") {
+                request[input.name] = input.value;
             }
-        })
-        console.log(request);
+        });
+
+        // 2. Coleta checkboxes/switches e serializa como ON/OFF
+        const checkboxInputs = form.querySelectorAll("input[type='checkbox']");
+        checkboxInputs.forEach((input: any) => {
+            if (input.name) {
+                request[input.name] = input.checked ? "ON" : "OFF";
+            }
+        });
+
+        console.log("Configuração enviada ao backend:", request);
 
         const postRequest = fetch("http://localhost:8081/config", {
             method: "POST",
@@ -26,9 +36,12 @@ const SetupPanel = ({ initServer }: any) => {
         postRequest
             .then((resp: Response): object => resp.json())
             .then((json): void => {
-                console.log(json);
-                initServer();
+                console.log("Configuração salva com sucesso:", json);
+                initServer(json);
             })
+            .catch((error) => {
+                console.error("Erro ao salvar configuração:", error);
+            });
     }
 
     function ResetFunction(e: any) {

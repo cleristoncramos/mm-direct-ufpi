@@ -13,6 +13,46 @@ import { modifyConfigFile } from "./config-mm-direct.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const getTimestamps = (dateInput) => {
+  const date = dateInput || new Date();
+  const utc = date.toISOString();
+  
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false
+  });
+  
+  const parts = formatter.formatToParts(date);
+  const p = {};
+  parts.forEach(part => p[part.type] = part.value);
+  
+  const tzParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    timeZoneName: 'longOffset'
+  }).formatToParts(date);
+  const nameVal = tzParts.find(pt => pt.type === 'timeZoneName')?.value || 'GMT-03:00';
+  
+  let offsetStr = '-03:00';
+  if (nameVal === 'GMT') {
+    offsetStr = '+00:00';
+  } else {
+    const match = nameVal.match(/GMT([+-])(\d+)(?::(\d+))?/);
+    if (match) {
+      const sign = match[1];
+      const hours = match[2].padStart(2, '0');
+      const minutes = (match[3] || '00').padStart(2, '0');
+      offsetStr = `${sign}${hours}:${minutes}`;
+    }
+  }
+  
+  const ms = String(date.getUTCMilliseconds()).padStart(3, '0');
+  const local = `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}.${ms}${offsetStr}`;
+  
+  return { utc, local };
+};
+
 const app = express();
 app.use(cors({
   origin: '*'
@@ -44,15 +84,148 @@ reactProcess.stdout.on('data', (data) => {
   console.log(output);
 });
 
-let rootPath = null; // Caminho do arquivo CSV a ser processado
-// ler arquivo json config.json
-const config = await JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf-8'));
+const rootPath = __dirname;
 
-rootPath = os.homedir() + config.path;
+// Caminhos dos arquivos a serem processados
+const inputPath = path.join(rootPath, "src/datasets/datasets.csv");
+const pathCpu = path.join(rootPath, "src/system_monitoring/system_monitoring.csv");
 
-// Caminho do arquivo CSV a ser processado
-const inputPath = rootPath + "/src/datasets/datasets.csv"
-const pathCpu = rootPath + "/src/system_monitoring/system_monitoring.csv"
+// Monitor de arquivos resiliente com tolerância a exclusão, recriação e truncamento
+const setupTailWatcher = (filePath, onLineCallback) => {
+  let tailInstance = null;
+  let retryTimeout = null;
+  let isClosed = false;
+
+  const startTailing = () => {
+    if (isClosed) return;
+
+    if (!fs.existsSync(filePath)) {
+      scheduleRetry();
+      return;
+    }
+
+    try {
+      tailInstance = new Tail(filePath, { follow: true });
+
+      tailInstance.on("line", (data) => {
+        if (!isClosed) {
+          onLineCallback(data);
+        }
+      });
+
+      tailInstance.on("error", (error) => {
+        cleanupTail();
+        scheduleRetry();
+      });
+    } catch (err) {
+      cleanupTail();
+      scheduleRetry();
+    }
+  };
+
+  const cleanupTail = () => {
+    if (tailInstance) {
+      try {
+        tailInstance.unwatch();
+      } catch (e) {
+        // ignore
+      }
+      tailInstance = null;
+    }
+  };
+
+  const scheduleRetry = () => {
+    if (isClosed || retryTimeout) return;
+    retryTimeout = setTimeout(() => {
+      retryTimeout = null;
+      if (fs.existsSync(filePath)) {
+        startTailing();
+      } else {
+        scheduleRetry();
+      }
+    }, 500); // Tenta reconectar a cada 500ms
+  };
+
+  startTailing();
+
+  return {
+    close: () => {
+      isClosed = true;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+        retryTimeout = null;
+      }
+      cleanupTail();
+    }
+  };
+};
+
+// Rotina síncrona de higienização do pipeline antes de novos experimentos
+const sanitizePipeline = () => {
+  console.log("Iniciando higienização do pipeline (sanitizePipeline)...");
+
+  // a) Derrubar processos remanescentes/zumbis nas portas críticas (6379)
+  try {
+    child_process.execSync("fuser -k 6379/tcp", { stdio: "ignore" });
+    console.log("Processos remanescentes na porta 6379 (Redis) derrubados.");
+  } catch (e) {
+    // ignorar se a porta já estiver livre
+  }
+
+  // Derrubar processos remanescentes na porta 8081 (preservando o processo atual do Node)
+  try {
+    const ourPid = process.pid.toString();
+    const stdout = child_process.execSync("lsof -t -i tcp:8081 -sTCP:LISTEN").toString().trim();
+    if (stdout) {
+      const pids = stdout.split("\n")
+        .map(p => p.trim())
+        .filter(p => p && p !== ourPid);
+      for (const pid of pids) {
+        console.log(`Derrubando processo zumbi na porta 8081 com PID: ${pid}`);
+        child_process.execSync(`kill -9 ${pid}`, { stdio: "ignore" });
+      }
+    }
+  } catch (e) {
+    // ignorar
+  }
+
+  // b) Remover fisicamente os resíduos e espelhos de logs de execuções anteriores
+  const logFile = path.join(rootPath, "src/logs/sequentialLog.aof");
+  try {
+    if (fs.existsSync(logFile)) {
+      fs.unlinkSync(logFile);
+      console.log(`Arquivo de log anterior removido: ${logFile}`);
+    }
+  } catch (e) {
+    console.error(`Erro ao remover arquivo de log: ${e.message}`);
+  }
+
+  // c) Garantir a criação das pastas e instanciar um arquivo de dataset totalmente limpo
+  const datasetDir = path.join(rootPath, "src/datasets");
+  const datasetFile = path.join(datasetDir, "datasets.csv");
+  try {
+    if (!fs.existsSync(datasetDir)) {
+      fs.mkdirSync(datasetDir, { recursive: true });
+    }
+    fs.writeFileSync(datasetFile, "");
+    console.log(`Dataset limpo e instanciado em: ${datasetFile}`);
+  } catch (e) {
+    console.error(`Erro ao criar dataset limpo: ${e.message}`);
+  }
+
+  // Garantir a limpeza/criação do arquivo de monitoramento do sistema
+  const monitoringDir = path.join(rootPath, "src/system_monitoring");
+  const monitoringFile = path.join(monitoringDir, "system_monitoring.csv");
+  try {
+    if (!fs.existsSync(monitoringDir)) {
+      fs.mkdirSync(monitoringDir, { recursive: true });
+    }
+    fs.writeFileSync(monitoringFile, "");
+    console.log(`Monitoramento limpo e instanciado em: ${monitoringFile}`);
+  } catch (e) {
+    console.error(`Erro ao criar monitoramento limpo: ${e.message}`);
+  }
+};
 
 // Variáveis de controle
 let total = 0; // Contador de linhas no CSV
@@ -71,6 +244,253 @@ const y2 = [];
 let databaseStartupCpu = 0;
 let databaseStartupMemoria = 0;
 
+let activeConfig = {};
+let currentRunId = null;
+let currentRunDir = null;
+let currentRunLogs = [];
+
+const finalizeRunResults = () => {
+  if (!currentRunDir) return;
+  console.log(`Finalizando resultados do ensaio: ${currentRunId}`);
+
+  // 1. Copia arquivos CSV se existirem
+  const datasetsSrc = path.join(rootPath, "src", activeConfig.executedCommandsCsvFilename || "datasets/datasets.csv");
+  const datasetsDest = path.join(currentRunDir, "datasets.csv");
+  try {
+    if (fs.existsSync(datasetsSrc)) {
+      fs.copyFileSync(datasetsSrc, datasetsDest);
+      console.log(`CSV de comandos copiado para: ${datasetsDest}`);
+    }
+  } catch (e) {
+    console.error(`Erro ao copiar datasets.csv para o ensaio ${currentRunId}:`, e.message);
+  }
+
+  const monitoringSrc = path.join(rootPath, "src", activeConfig.systemMonitoringCsvFilename || "system_monitoring/system_monitoring.csv");
+  const monitoringDest = path.join(currentRunDir, "system_monitoring.csv");
+  try {
+    if (fs.existsSync(monitoringSrc)) {
+      fs.copyFileSync(monitoringSrc, monitoringDest);
+      console.log(`CSV de monitoramento copiado para: ${monitoringDest}`);
+    }
+  } catch (e) {
+    console.error(`Erro ao copiar system_monitoring.csv para o ensaio ${currentRunId}:`, e.message);
+  }
+
+  // 2. Analisa logs para identificar marcos de falha/recuperação
+  let failureTimes = { utc: null, local: null };
+  let recoveryStartTimes = { utc: null, local: null };
+  let recoveryEndTimes = { utc: null, local: null };
+  let stabilityTimes = { utc: null, local: null };
+  let recoveryDuration = null;
+
+  const fullLogs = currentRunLogs.join("\n");
+  const logLines = fullLogs.split("\n");
+
+  logLines.forEach((log) => {
+    const text = log.toLowerCase();
+    const redisTimeRegex = /^\d+:[M|S|C]\s+([\d\s\w\:\.]+)\s+[\*\#\-]/;
+    const matchTime = log.match(redisTimeRegex);
+    
+    let dateObj = new Date();
+    if (matchTime) {
+      const parsed = Date.parse(matchTime[1] + " GMT-0300");
+      if (!isNaN(parsed)) {
+        dateObj = new Date(parsed);
+      }
+    }
+    const times = getTimestamps(dateObj);
+
+    if (text.includes("loading the database from")) {
+      recoveryStartTimes = times;
+    } else if (text.includes("user requested shutdown") || text.includes("redis is now ready to exit")) {
+      failureTimes = times;
+    } else if (text.includes("db loaded from indexed log") || text.includes("db loaded from aof")) {
+      recoveryEndTimes = times;
+      const match = log.match(/loaded from (Indexed Log|AOF):\s*([\d\.]+)\s*seconds/i);
+      if (match) {
+        recoveryDuration = parseFloat(match[2]);
+      }
+    } else if (text.includes("ready to accept connections")) {
+      stabilityTimes = times;
+    }
+  });
+
+  // Calcula duração baseada exclusivamente nos marcos UTC
+  if (recoveryStartTimes.utc && recoveryEndTimes.utc) {
+    const startMs = Date.parse(recoveryStartTimes.utc);
+    const endMs = Date.parse(recoveryEndTimes.utc);
+    if (!isNaN(startMs) && !isNaN(endMs) && isFinite(startMs) && isFinite(endMs)) {
+      recoveryDuration = parseFloat(((endMs - startMs) / 1000).toFixed(3));
+    }
+  }
+
+  const results = {
+    id: currentRunId,
+    timestamp: getTimestamps().utc,
+    timestampLocal: getTimestamps().local,
+    timezone: "America/Sao_Paulo",
+    milestones: {
+      failureAtUtc: failureTimes.utc,
+      failureAtLocal: failureTimes.local,
+      recoveryStartAtUtc: recoveryStartTimes.utc,
+      recoveryStartAtLocal: recoveryStartTimes.local,
+      recoveryEndAtUtc: recoveryEndTimes.utc,
+      recoveryEndAtLocal: recoveryEndTimes.local,
+      stabilityAtUtc: stabilityTimes.utc,
+      stabilityAtLocal: stabilityTimes.local
+    },
+    recoveryDurationSeconds: recoveryDuration,
+    status: stabilityTimes.utc ? "Estável" : "Interrompido"
+  };
+
+  try {
+    fs.writeFileSync(path.join(currentRunDir, "results.json"), JSON.stringify(results, null, 2));
+    console.log("Arquivo results.json gerado com sucesso!");
+  } catch (err) {
+    console.error("Erro ao gravar results.json:", err.message);
+  }
+
+  // 3. Calcula as métricas científicas consolidadas para o report.json
+  let peakThroughput = 0;
+  let averageThroughput = 0;
+  let totalCommands = 0;
+
+  if (fs.existsSync(datasetsDest)) {
+    try {
+      const fileContent = fs.readFileSync(datasetsDest, "utf-8");
+      const lines = fileContent.split("\n");
+      let dbStartup = 0;
+      let lineCount = 0;
+      const contagem = {};
+
+      lines.forEach((lineText) => {
+        const row = lineText.split(",");
+        if (row.length < 5) return;
+        lineCount++;
+        if (lineCount === 2) {
+          dbStartup = parseInt(row[1]);
+        } else if (lineCount > 2) {
+          if (row[0] !== '0' && !isNaN(parseInt(row[2]))) {
+            totalCommands++;
+            const finishTime = parseInt(row[2]);
+            const sec = Math.floor((finishTime - dbStartup) / 1000000);
+            if (sec >= 0) {
+              contagem[sec] = (contagem[sec] || 0) + 1;
+            }
+          }
+        }
+      });
+
+      const counts = Object.values(contagem);
+      if (counts.length > 0) {
+        peakThroughput = Math.max(...counts);
+        const sum = counts.reduce((acc, curr) => acc + curr, 0);
+        averageThroughput = parseFloat((sum / counts.length).toFixed(2));
+      }
+    } catch (e) {
+      console.error("Erro ao computar sumário de throughput:", e.message);
+    }
+  }
+
+  let peakCpu = 0;
+  let averageCpu = 0;
+  let peakMemory = 0;
+  let averageMemory = 0;
+
+  if (fs.existsSync(monitoringDest)) {
+    try {
+      const fileContent = fs.readFileSync(monitoringDest, "utf-8");
+      const lines = fileContent.split("\n");
+      const cpus = [];
+      const mems = [];
+
+      lines.forEach((lineText) => {
+        const row = lineText.split(";");
+        if (row.length < 3) return;
+        if (row[0].match(/^\d+$/)) {
+          cpus.push(parseFloat(row[1]));
+          mems.push(parseFloat(row[2]));
+        }
+      });
+
+      if (cpus.length > 0) {
+        peakCpu = Math.max(...cpus);
+        const sumCpu = cpus.reduce((acc, curr) => acc + curr, 0);
+        averageCpu = parseFloat((sumCpu / cpus.length).toFixed(2));
+      }
+      if (mems.length > 0) {
+        const memsMb = mems.map(m => m / 1024);
+        peakMemory = Math.max(...memsMb);
+        const sumMem = memsMb.reduce((acc, curr) => acc + curr, 0);
+        averageMemory = parseFloat((sumMem / memsMb.length).toFixed(2));
+      }
+    } catch (e) {
+      console.error("Erro ao computar sumário de CPU/Memória:", e.message);
+    }
+  }
+
+  // 4. Grava report.json no diretório export/
+  const exportDir = path.join(currentRunDir, "export");
+  try {
+    fs.mkdirSync(exportDir, { recursive: true });
+  } catch (e) {}
+
+  const metadataPath = path.join(currentRunDir, "metadata.json");
+  let startedAtUtc = getTimestamps().utc;
+  let startedAtLocal = getTimestamps().local;
+  if (fs.existsSync(metadataPath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(metadataPath, "utf-8"));
+      startedAtUtc = meta.timestamp;
+      startedAtLocal = meta.timestampLocal || getTimestamps(new Date(meta.timestamp)).local;
+    } catch (e) {}
+  }
+
+  const report = {
+    runId: currentRunId,
+    mode: (activeConfig.instantRecoveryState || "ON").toUpperCase() === "ON" ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)",
+    timezone: "America/Sao_Paulo",
+    startedAtUtc,
+    startedAtLocal,
+    failureAtUtc: failureTimes.utc,
+    failureAtLocal: failureTimes.local,
+    recoveryStartAtUtc: recoveryStartTimes.utc,
+    recoveryStartAtLocal: recoveryStartTimes.local,
+    recoveryEndAtUtc: recoveryEndTimes.utc,
+    recoveryEndAtLocal: recoveryEndTimes.local,
+    stabilityAtUtc: stabilityTimes.utc,
+    stabilityAtLocal: stabilityTimes.local,
+    recoveryDurationSeconds: recoveryDuration,
+    status: stabilityTimes.utc ? "Estável" : "Interrompido",
+    config: activeConfig,
+    throughputSummary: {
+      peakThroughput,
+      averageThroughput,
+      totalCommands
+    },
+    cpuSummary: {
+      peakCpu,
+      averageCpu
+    },
+    memorySummary: {
+      peakMemory,
+      averageMemory
+    }
+  };
+
+  try {
+    fs.writeFileSync(path.join(exportDir, "report.json"), JSON.stringify(report, null, 2));
+    console.log("Relatório export/report.json gerado com sucesso!");
+  } catch (err) {
+    console.error("Erro ao gravar report.json:", err.message);
+  }
+
+  // Reset referências
+  currentRunId = null;
+  currentRunDir = null;
+  currentRunLogs = [];
+};
+
 const server = app.listen(port, () => {
   console.log(`rota para configuração do arquivo redis_ir.conf: http://localhost:${port}/config`);
 });
@@ -86,155 +506,303 @@ const wss = new WebSocketServer({ server }, () => {
 // rota para configurar o arquivo de configuração do MM-DIRECT
 app.post('/config', express.json(), (req, res) => {
   const config = req.body;
+  activeConfig = config; // Salva configuração ativa
   modifyConfigFile(config, rootPath);
   res.json(config);
 });
 
-// função para contagem de comandos por segundo
-const processaCSV = async (ws, inputPath) => {
-  fs.createReadStream(inputPath, {
-    start: total,
-  })
-    .pipe(csv())
-    .on('data', (row) => {
-      total++;
-      lendoArquivo = true;
+// Rota para listar ensaios concluidos
+app.get('/api/runs', (req, res) => {
+  const runsDir = path.join(rootPath, "src/runs");
+  if (!fs.existsSync(runsDir)) {
+    return res.json([]);
+  }
+  try {
+    const folders = fs.readdirSync(runsDir);
+    const runs = [];
+    folders.forEach((folder) => {
+      const runPath = path.join(runsDir, folder);
+      if (fs.statSync(runPath).isDirectory()) {
+        const metadataPath = path.join(runPath, "metadata.json");
+        const resultsPath = path.join(runPath, "results.json");
+        const reportPath = path.join(runPath, "export/report.json");
+        
+        let metadata = null;
+        let results = null;
+        let report = null;
+        
+        if (fs.existsSync(metadataPath)) {
+          metadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8"));
+        }
+        if (fs.existsSync(resultsPath)) {
+          results = JSON.parse(fs.readFileSync(resultsPath, "utf-8"));
+        }
+        if (fs.existsSync(reportPath)) {
+          report = JSON.parse(fs.readFileSync(reportPath, "utf-8"));
+        }
+        
+        runs.push({
+          id: folder,
+          metadata,
+          results,
+          report
+        });
+      }
+    });
+    runs.sort((a, b) => b.id.localeCompare(a.id));
+    res.json(runs);
+  } catch (err) {
+    console.error("Erro ao listar ensaios:", err);
+    res.status(500).json({ error: "Erro ao listar ensaios" });
+  }
+});
 
-      // Processar cada linha do CSV
-      if (total === 1) {
-        database_startup_time = parseInt(row.startTime);
-      } else if (total >= 3) {
-        if (row.type !== '0' && !isNaN(row.finishTime)) {
-          const tempoTermino = parseInt(row.finishTime);
-          const tempoEmSegundos = Math.floor((tempoTermino - database_startup_time) / 1000000);
-
-          if (tempoEmSegundos >= 0) {
-            const entryIndex = contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
-
-            if (entryIndex === -1) {
-              contagemComandos.push([tempoEmSegundos, 1]);
-            } else {
-              contagemComandos[entryIndex][1]++;
+// Rota para ler a telemetria historica de um ensaio
+app.get('/api/runs/:runId/telemetry', (req, res) => {
+  const { runId } = req.params;
+  const datasetsPath = path.join(rootPath, "src/runs", runId, "datasets.csv");
+  const monitoringPath = path.join(rootPath, "src/runs", runId, "system_monitoring.csv");
+  
+  const telemetry = {
+    throughput: [],
+    monitoring: []
+  };
+  
+  if (fs.existsSync(datasetsPath)) {
+    try {
+      const fileContent = fs.readFileSync(datasetsPath, "utf-8");
+      const lines = fileContent.split("\n");
+      let totalLines = 0;
+      let dbStartupTime = 0;
+      const contagem = {};
+      
+      lines.forEach((lineText) => {
+        const row = lineText.split(",");
+        if (row.length < 5) return;
+        totalLines++;
+        if (totalLines === 2) {
+          dbStartupTime = parseInt(row[1]);
+        } else if (totalLines > 2) {
+          if (row[0] !== '0' && !isNaN(parseInt(row[2]))) {
+            const finishTime = parseInt(row[2]);
+            const sec = Math.floor((finishTime - dbStartupTime) / 1000000);
+            if (sec >= 0) {
+              contagem[sec] = (contagem[sec] || 0) + 1;
             }
           }
         }
-      }
+      });
+      
+      const list = Object.keys(contagem).map((sec) => [parseInt(sec), contagem[sec]]);
+      telemetry.throughput = list.sort((a, b) => a[0] - b[0]);
+    } catch(err) {
+      console.error("Erro ao ler datasets de run:", err);
+    }
+  }
 
-      // Verificar se o tamanho do array aumentou e enviar o penúltimo elemento apenas uma vez
-      for (let i = 0; i < contagemComandos.length; i++) {
-        if (contagemComandos.length > arrayParaVerificarSeJaFoiEnviado.length) {
-          if (i === contagemComandos.length - 2) {
-            arrayParaVerificarSeJaFoiEnviado.push(contagemComandos[i]);
-            ws.send(JSON.stringify(contagemComandos[i]));
+  if (fs.existsSync(monitoringPath)) {
+    try {
+      const fileContent = fs.readFileSync(monitoringPath, "utf-8");
+      const lines = fileContent.split("\n");
+      let dbStartupCpu = 0;
+      
+      lines.forEach((lineText) => {
+        const row = lineText.split(";");
+        if (row.length < 3) return;
+        if (row[0] === "Database startup") {
+          dbStartupCpu = parseInt(row[2]);
+        } else if (row[0].match(/^\d+$/)) {
+          const endTime = parseInt(row[0]);
+          const sec = Math.floor((endTime - dbStartupCpu) / 1000000);
+          telemetry.monitoring.push([sec, parseFloat(row[1]), parseFloat(row[2])]); // sec, cpu, ram
+        }
+      });
+      telemetry.monitoring.sort((a, b) => a[0] - b[0]);
+    } catch(err) {
+      console.error("Erro ao ler monitoramento de run:", err);
+    }
+  }
+
+  res.json(telemetry);
+});
+
+// função para contagem de comandos por segundo
+const processaCSV = async (ws, inputPath) => {
+  try {
+    if (!fs.existsSync(inputPath)) return;
+    fs.createReadStream(inputPath, {
+      start: total,
+    })
+      .on('error', (err) => {
+        console.error(`Erro na leitura do stream CSV: ${err.message}`);
+      })
+      .pipe(csv())
+      .on('error', (err) => {
+        console.error(`Erro no parser CSV: ${err.message}`);
+      })
+      .on('data', (row) => {
+        total++;
+        lendoArquivo = true;
+
+        // Processar cada linha do CSV
+        if (total === 1) {
+          database_startup_time = parseInt(row.startTime);
+        } else if (total >= 3) {
+          if (row.type !== '0' && !isNaN(row.finishTime)) {
+            const tempoTermino = parseInt(row.finishTime);
+            const tempoEmSegundos = Math.floor((tempoTermino - database_startup_time) / 1000000);
+
+            if (tempoEmSegundos >= 0) {
+              const entryIndex = contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
+
+              if (entryIndex === -1) {
+                contagemComandos.push([tempoEmSegundos, 1]);
+              } else {
+                contagemComandos[entryIndex][1]++;
+              }
+            }
           }
         }
-      }
-    })
-    .on('end', () => {
-      console.log('CSV file successfully processed');
-      lendoArquivo = false;
-    });
+
+        // Verificar se o tamanho do array aumentou e enviar o penúltimo elemento apenas uma vez
+        for (let i = 0; i < contagemComandos.length; i++) {
+          if (contagemComandos.length > arrayParaVerificarSeJaFoiEnviado.length) {
+            if (i === contagemComandos.length - 2) {
+              arrayParaVerificarSeJaFoiEnviado.push(contagemComandos[i]);
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify(contagemComandos[i]));
+              }
+            }
+          }
+        }
+      })
+      .on('end', () => {
+        console.log('CSV file successfully processed');
+        lendoArquivo = false;
+      });
+  } catch (err) {
+    console.error(`Erro em processaCSV: ${err.message}`);
+  }
 }
 
 // função para calcular latência
 const processaLatencia = async (ws, inputPath) => {
-  fs.createReadStream(inputPath, {
-    start: totalLatencia,
-  })
-    .pipe(csv())
-    .on('data', (row) => {
-      totalLatencia++;
-      lendoArquivo = true;
+  try {
+    if (!fs.existsSync(inputPath)) return;
+    fs.createReadStream(inputPath, {
+      start: totalLatencia,
+    })
+      .on('error', (err) => {
+        console.error(`Erro na leitura do stream de Latência: ${err.message}`);
+      })
+      .pipe(csv())
+      .on('error', (err) => {
+        console.error(`Erro no parser de Latência: ${err.message}`);
+      })
+      .on('data', (row) => {
+        totalLatencia++;
+        lendoArquivo = true;
 
-      if (totalLatencia === 1) {
-        database_startup_time_latencia = parseInt(row.startTime);
-      } else if (totalLatencia >= 3) {
-        if (parseInt(row.type) != '0') {
-          const num = parseInt((parseInt(row.startTime) - database_startup_time_latencia) / 1000000);
-          if (row.type === 'N') {
-            x1.push(num);
-            y1.push(parseInt(row.latency));
-            ws.send(JSON.stringify({ x1: [num, parseInt(row.latency)] }));
-          }
-          if (row.type === 'A') {
-            x2.push(num);
-            y2.push(parseInt(row.latency));
-            ws.send(JSON.stringify({ x2: [num, parseInt(row.latency)] }));
+        if (totalLatencia === 1) {
+          database_startup_time_latencia = parseInt(row.startTime);
+        } else if (totalLatencia >= 3) {
+          if (parseInt(row.type) != '0') {
+            const num = parseInt((parseInt(row.startTime) - database_startup_time_latencia) / 1000000);
+            if (row.type === 'N') {
+              x1.push(num);
+              y1.push(parseInt(row.latency));
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ x1: [num, parseInt(row.latency)] }));
+              }
+            }
+            if (row.type === 'A') {
+              x2.push(num);
+              y2.push(parseInt(row.latency));
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify({ x2: [num, parseInt(row.latency)] }));
+              }
+            }
           }
         }
-      }
-    })
+      });
+  } catch (err) {
+    console.error(`Erro em processaLatencia: ${err.message}`);
+  }
 }
 
 // função para processar o dataset de uso de cpu
 const processaCpu = async (ws, pathCpu) => {
-  const data = await fs.promises.readFile(pathCpu, 'utf-8');
-  const lines = data.trim().split('\n');
+  try {
+    if (!fs.existsSync(pathCpu)) return;
+    const data = await fs.promises.readFile(pathCpu, 'utf-8');
+    const lines = data.trim().split('\n');
 
-  if (lines.length > 2) {
-    const databaseStartupLine = lines[1].split(';');
-    const databaseStartupTime = parseInt(databaseStartupLine[2]);
+    if (lines.length > 2) {
+      const databaseStartupLine = lines[1].split(';');
+      if (databaseStartupLine.length < 3) return;
+      const databaseStartupTime = parseInt(databaseStartupLine[2]);
 
-    databaseStartupCpu = databaseStartupTime;
+      databaseStartupCpu = databaseStartupTime;
 
-    console.log(databaseStartupCpu)
-    console.log(lines)
+      lines.splice(0, 2); 
 
-    lines.splice(0, 2); 
-
-    for (let i = 0; i < lines.length; i++) {
-      const linha = lines[i].split(';');
-      if (linha[0].match(/^\d+$/)) {
-        const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
-        x.push(num);
-        y.push(parseFloat(linha[1]));
-        ws.send(JSON.stringify([num, parseFloat(linha[1])]));
+      for (let i = 0; i < lines.length; i++) {
+        const linha = lines[i].split(';');
+        if (linha.length >= 2 && linha[0].match(/^\d+$/)) {
+          const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
+          x.push(num);
+          y.push(parseFloat(linha[1]));
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify([num, parseFloat(linha[1])]));
+          }
+        }
       }
     }
+  } catch (err) {
+    console.error(`Erro em processaCpu: ${err.message}`);
   }
 }
 
 // função para processar o dataset de uso de memória
 const processaMemoria = async (ws, pathMemoria) => {
-  const data = await fs.promises.readFile(pathCpu, 'utf-8');
-  const lines = data.trim().split('\n');
+  try {
+    if (!fs.existsSync(pathMemoria)) return;
+    const data = await fs.promises.readFile(pathMemoria, 'utf-8');
+    const lines = data.trim().split('\n');
 
-  if (lines.length > 2) {
-    const databaseStartupLine = lines[1].split(';');
-    const databaseStartupTime = parseInt(databaseStartupLine[2]);
+    if (lines.length > 2) {
+      const databaseStartupLine = lines[1].split(';');
+      if (databaseStartupLine.length < 3) return;
+      const databaseStartupTime = parseInt(databaseStartupLine[2]);
 
-    databaseStartupMemoria = databaseStartupTime;
+      databaseStartupMemoria = databaseStartupTime;
 
-    lines.splice(0, 2); 
+      lines.splice(0, 2); 
 
-    for (let i = 0; i < lines.length; i++) {
-      const linha = lines[i].split(';');
-      if (linha[0].match(/^\d+$/)) {
-        const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
-        x.push(num);
-        y.push(parseFloat(linha[2]));
-        ws.send(JSON.stringify([num, parseInt(lines[2])]));
+      for (let i = 0; i < lines.length; i++) {
+        const linha = lines[i].split(';');
+        if (linha.length >= 3 && linha[0].match(/^\d+$/)) {
+          const num = Math.floor((parseInt(linha[0]) - databaseStartupMemoria) / 1000000);
+          x.push(num);
+          y.push(parseFloat(linha[2]));
+          if (ws.readyState === 1) {
+            ws.send(JSON.stringify([num, parseInt(linha[2])]));
+          }
+        }
       }
     }
+  } catch (err) {
+    console.error(`Erro em processaMemoria: ${err.message}`);
   }
 }
 
 // conexão websocket
 wss.on('connection', async (ws, req) => {
   console.log('Client connected');
-
-  // rota websocket para o dataset de comandos por segundo
-  if (req.url === '/data') {
-    const tail = new Tail(inputPath);
-    
-    tail.on("error", function(error) {
-      console.log('Aviso do Monitor (Tail - Data): Arquivo datasets.csv foi movido ou recriado.');
-      try { tail.unwatch(); } catch (e) {}
-    });
-
-    await processaCSV(ws, inputPath);
-
-    tail.on("line", function (data) {
+  try {
+    // rota websocket para o dataset de comandos por segundo
+    if (req.url === '/data') {
+    const watcher = setupTailWatcher(inputPath, (data) => {
       const line = data.split(',');
       const endTime = parseInt(line[2]);
 
@@ -262,8 +830,10 @@ wss.on('connection', async (ws, req) => {
       }
     });
 
+    await processaCSV(ws, inputPath);
+
     ws.on('close', () => {
-      try { tail.unwatch(); } catch (e) {}
+      watcher.close();
       contagemComandos.length = 0;
       arrayParaVerificarSeJaFoiEnviado.length = 0;
       total = 0;
@@ -273,17 +843,8 @@ wss.on('connection', async (ws, req) => {
   
   // rota websocket para o dataset de uso de cpu
   else if (req.url === '/cpu') {
-    await processaCpu(ws, pathCpu);
-
-    const tail = new Tail(pathCpu);
-
-    tail.on("error", function(error) {
-      console.log('Aviso do Monitor (Tail - CPU): Arquivo system_monitoring.csv foi movido ou recriado.');
-      try { tail.unwatch(); } catch (e) {}
-    });
-
-    tail.on("line", function (data) {
-      const lines = data.split(';')
+    const watcher = setupTailWatcher(pathCpu, (data) => {
+      const lines = data.split(';');
       const endTime = parseInt(lines[0]);
 
       if (lines[0] === "Database startup") {
@@ -298,8 +859,10 @@ wss.on('connection', async (ws, req) => {
       }
     });
 
+    await processaCpu(ws, pathCpu);
+
     ws.on('close', () => {
-      try { tail.unwatch(); } catch (e) {}
+      watcher.close();
       x.length = 0;
       y.length = 0;
     });
@@ -307,85 +870,129 @@ wss.on('connection', async (ws, req) => {
   
   // rota para iniciar o servidor MM-DIRECT
   else if (req.url === '/start') {
-    const redisServerPath = path.join(rootPath, '/src');
-    process.chdir(redisServerPath);
+    sanitizePipeline();
 
-    const logFile = path.join(redisServerPath, 'datasets/datasets.csv');
-    if (fs.existsSync(logFile)) {
-      fs.unlinkSync(logFile);
+    // 1. Cria diretório do ensaio
+    const runId = `run_${Date.now()}`;
+    const runDir = path.join(rootPath, "src/runs", runId);
+    try {
+      fs.mkdirSync(runDir, { recursive: true });
+      console.log(`Diretório do ensaio criado em: ${runDir}`);
+    } catch(err) {
+      console.error("Erro ao criar diretório do ensaio:", err.message);
     }
 
-    const child = child_process.spawn('./redis-server');
+    currentRunId = runId;
+    currentRunDir = runDir;
+    currentRunLogs = [];
+
+    // 2. Grava metadata.json
+    const startTimes = getTimestamps();
+    const metadata = {
+      id: runId,
+      timestamp: startTimes.utc,
+      timestampLocal: startTimes.local,
+      timezone: "America/Sao_Paulo",
+      config: activeConfig,
+      mode: (activeConfig.instantRecoveryState || "ON").toUpperCase() === "ON" ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)",
+      initialExpectedState: "Carregando Banco",
+      caminhos: {
+        aof: path.join(rootPath, "src", activeConfig.aofFilename || "logs/sequentialLog.aof"),
+        datasets: path.join(rootPath, "src", activeConfig.executedCommandsCsvFilename || "datasets/datasets.csv"),
+        monitoring: path.join(rootPath, "src", activeConfig.systemMonitoringCsvFilename || "system_monitoring/system_monitoring.csv")
+      }
+    };
+
+    try {
+      fs.writeFileSync(path.join(runDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+      console.log("Arquivo metadata.json gravado com sucesso!");
+    } catch(err) {
+      console.error("Erro ao gravar metadata.json:", err.message);
+    }
+
+    const redisServerPath = path.join(rootPath, 'src');
+    const child = child_process.spawn('./redis-server', [], { cwd: redisServerPath });
 
     child.on('error', (err) => {
       console.error(`Erro ao iniciar o servidor Redis: ${err}`);
+      if (ws.readyState === 1) {
+        ws.send(`Erro ao iniciar o servidor Redis: ${err.message}`);
+      }
     });
 
     child.stdout.on('data', (data) => {
-      ws.send('Redis server started');
       const output = data.toString();
       console.log(output);
-      ws.send(output);
-
-      const regex2 = /Generating information about executed database commands .../;
-      const regex3 = /Generating system monitoring .../;
-
-      if (regex2.test(output)) {
-        console.log('Gerando informações sobre os comandos do banco de dados executados ...');
-        ws.send('Generating information database commands');
+      
+      // Acumula logs locais do ensaio
+      currentRunLogs.push(output);
+      try {
+        fs.appendFileSync(path.join(currentRunDir, "logs.txt"), output);
+      } catch(err) {
+        // Ignorar
       }
 
-      if (regex3.test(output)) {
-        console.log('Gerando monitoramento do sistema ...');
-        ws.send('Generating system monitoring');
+      if (ws.readyState === 1) {
+        ws.send('Redis server started');
+        ws.send(output);
+
+        const regex2 = /Generating information about executed database commands .../;
+        const regex3 = /Generating system monitoring .../;
+
+        if (regex2.test(output)) {
+          console.log('Gerando informações sobre os comandos do banco de dados executados ...');
+          ws.send('Generating information database commands');
+        }
+
+        if (regex3.test(output)) {
+          console.log('Gerando monitoramento do sistema ...');
+          ws.send('Generating system monitoring');
+        }
       }
     });
 
-    ws.on('close', () => {
-      child.kill();
+    child.on('exit', (code, signal) => {
+      console.log(`Processo redis-server encerrado com código ${code} e sinal ${signal}`);
+      if (ws.readyState === 1) {
+        ws.send(`Redis server stopped with code ${code}`);
+      }
+      // Finaliza o ensaio gravando os resultados consolidados
+      finalizeRunResults();
     });
   }
   
   // rota para parar o servidor MM-DIRECT
   else if (req.url === '/stop') {
-    const redisServerPath = path.join(__dirname, '../../MM-DIRECT/src');
-    process.chdir(redisServerPath);
-
-    const child = child_process.spawn('./redis-cli', ['shutdown']);
+    const redisServerPath = path.join(rootPath, 'src');
+    const child = child_process.spawn('./redis-cli', ['shutdown'], { cwd: redisServerPath });
 
     child.on('error', (err) => {
-      console.error(`Erro ao iniciar o servidor Redis: ${err}`);
+      console.error(`Erro ao parar o servidor Redis via redis-cli: ${err}`);
+      if (ws.readyState === 1) {
+        ws.send(`Erro ao parar o servidor Redis: ${err.message}`);
+      }
     });
 
     child.on('exit', (code, signal) => {
-      console.log(`Servidor Redis encerrado com código ${code} e sinal ${signal}`);
-      ws.send('Redis server stopped');
-      ws.close();
+      console.log(`redis-cli shutdown encerrado com código ${code} e sinal ${signal}`);
+      if (ws.readyState === 1) {
+        ws.send('Redis server stopped');
+        ws.close();
+      }
     });
 
     child.stdout.on('data', (data) => {
-      ws.send('Redis server stopped');
       const output = data.toString();
       console.log(output);
-    });
-
-    ws.on('close', () => {
-      child.kill();
+      if (ws.readyState === 1) {
+        ws.send(output);
+      }
     });
   }
 
   else if (req.url === '/memory') {
-    const tail = new Tail(pathCpu);
-
-    tail.on("error", function(error) {
-      console.log('Aviso do Monitor (Tail - Memory): Arquivo system_monitoring.csv foi movido ou recriado.');
-      try { tail.unwatch(); } catch (e) {}
-    });
-
-    await processaMemoria(ws, pathCpu);
-
-    tail.on("line", function (data) {
-      const lines = data.split(';')
+    const watcher = setupTailWatcher(pathCpu, (data) => {
+      const lines = data.split(';');
       const endTime = parseInt(lines[0]);
 
       if (lines[0] === "Database startup") {
@@ -400,23 +1007,16 @@ wss.on('connection', async (ws, req) => {
       }
     });
 
+    await processaMemoria(ws, pathCpu);
+
     ws.on('close', () => {
-      try { tail.unwatch(); } catch (e) {}
+      watcher.close();
     });
   }
 
   else if (req.url === '/latencia') {
-    await processaLatencia(ws, inputPath);
-    console.log('latencia')
-    const tail = new Tail(inputPath);
-
-    tail.on("error", function(error) {
-      console.log('Aviso do Monitor (Tail - Latência): Arquivo datasets.csv foi movido ou recriado.');
-      try { tail.unwatch(); } catch (e) {}
-    });
-
-    tail.on("line", function (data) {
-      const lines = data.split(',')
+    const watcher = setupTailWatcher(inputPath, (data) => {
+      const lines = data.split(',');
       const endTime = parseInt(lines[2]);
 
       if (lines[0] !== '0' && !isNaN(endTime)) {
@@ -435,12 +1035,34 @@ wss.on('connection', async (ws, req) => {
       }
     });
 
+    await processaLatencia(ws, inputPath);
+
     ws.on('close', () => {
-      try { tail.unwatch(); } catch (e) {}
+      watcher.close();
     });
   }
   
-  else {
-    ws.send('Invalid URL');
+    else {
+      ws.send('Invalid URL');
+    }
+  } catch (err) {
+    console.error("Erro na conexão WebSocket:", err);
+    try {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ error: err.message }));
+      }
+    } catch(e) {}
   }
+});
+
+// Tratamento global de erros de processo (Boas Práticas de Resiliência)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error("Rejeição Não Tratada (Unhandled Rejection) detectada:", reason);
+  // Log estruturado para diagnóstico sem derrubar o processo caso não seja fatal
+});
+
+process.on('uncaughtException', (error) => {
+  console.error("Exceção Não Capturada (Uncaught Exception) fatal detectada:", error);
+  // Loga o erro crítico e encerra o processo de forma controlada para que o supervisor possa reiniciá-lo de estado limpo
+  process.exit(1);
 });

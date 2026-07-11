@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "sudo fuser -k 6379/tcp ; sudo fuser -k 8081/tcp ; rm -f /home/cleriston/MM-DIRECT/src/logs/sequentialLog.aof ; rm -f ./src/logs/sequentialLog.aof ; mkdir -p ./src/datasets && touch ./src/datasets/datasets.csv && node --max-old-space-size=8192 server.js",
+    "start": "sudo fuser -k 6379/tcp ; sudo fuser -k 8081/tcp ; rm -f ./src/logs/sequentialLog.aof ; rm -f ./src/logs/sequentialLog.aof ; mkdir -p ./src/datasets && touch ./src/datasets/datasets.csv && node --max-old-space-size=8192 server.js",
     "cpu": "node cpu-chart.js"
   },
   "keywords": [],
