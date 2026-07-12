@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from "react";
+import { Chart } from "react-google-charts";
 import CpuChart from "./CpuChart";
 import TransactionChart from "./TransferChart";
 import MemoryChart from "./MemoryChart";
@@ -21,6 +22,44 @@ const ChartBoard = ({
     onReloadButtonClick,
     configData = {}
 }: ChartBoardProps) => {
+    const formatPtBr = (val: number | string | undefined | null, decimals = 3) => {
+        if (val === undefined || val === null) return "N/A";
+        const num = typeof val === "string" ? parseFloat(val) : val;
+        if (isNaN(num)) return "N/A";
+        return num.toFixed(decimals).replace(".", ",");
+    };
+
+    const printChartOptions = (title: string, yTitle: string, color: string) => ({
+        title,
+        backgroundColor: "white",
+        chartArea: { width: "80%", height: "65%", top: "15%", left: "12%" },
+        titleTextStyle: { color: "black", fontSize: 9, fontName: "Times New Roman", bold: true },
+        hAxis: {
+            title: "Tempo (s)",
+            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
+            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
+            gridlines: { color: "#e2e8f0" }
+        },
+        vAxis: {
+            title: yTitle,
+            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
+            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
+            gridlines: { color: "#e2e8f0" }
+        },
+        colors: [color],
+        legend: { position: "none" },
+        curveType: "function"
+    });
+
+    const activeRunId = useMemo(() => String(Date.now()), []);
+
+    const triggerActivePdfPrint = () => {
+        const originalTitle = document.title;
+        document.title = activeRunId;
+        window.print();
+        document.title = originalTitle;
+    };
+
     const [chartConnections, setChartConnections] = useState<WebSocket[]>([]);
     const [dataCPU, setDataCPU] = useState<[number, number][]>([]);
     const [dataTransfer, setDataTransfer] = useState<[number, number][]>([]);
@@ -144,6 +183,49 @@ const ChartBoard = ({
 
         return `${diffSeconds.toFixed(3)}s`;
     }, [recoveryStartAtUtc, recoveryEndAtUtc]);
+
+    const activeTimeline = useMemo(() => {
+        const dStartupToCrash = (failureTime !== null) ? failureTime : null;
+        const dDowntime = (recoveryStartTime !== null && failureTime !== null) ? (recoveryStartTime - failureTime) : null;
+        const dRecovery = (recoveryEndTime !== null && recoveryStartTime !== null) ? (recoveryEndTime - recoveryStartTime) : null;
+        const dToStability = (stabilityTime !== null && recoveryEndTime !== null) ? (stabilityTime - recoveryEndTime) : null;
+        const dDowntimeToAvailability = (stabilityTime !== null && failureTime !== null) ? (stabilityTime - failureTime) : null;
+        
+        return {
+            dStartupToCrash,
+            dDowntime,
+            dRecovery,
+            dToStability,
+            dDowntimeToAvailability
+        };
+    }, [failureTime, recoveryStartTime, recoveryEndTime, stabilityTime]);
+
+    const printCpuChartData = useMemo(() => {
+        const header = ["Tempo (s)", "CPU (%)"];
+        if (dataCPU.length === 0) return [header, [0, 0]];
+        return [
+            header,
+            ...dataCPU
+        ];
+    }, [dataCPU]);
+
+    const printRamChartData = useMemo(() => {
+        const header = ["Tempo (s)", "RAM (MB)"];
+        if (dataMemory.length === 0) return [header, [0, 0]];
+        return [
+            header,
+            ...dataMemory
+        ];
+    }, [dataMemory]);
+
+    const printThroughputChartData = useMemo(() => {
+        const header = ["Tempo (s)", "Throughput (ops/s)"];
+        if (dataTransfer.length === 0) return [header, [0, 0]];
+        return [
+            header,
+            ...dataTransfer
+        ];
+    }, [dataTransfer]);
 
     // 2. Conectar e gerenciar WebSockets com reconexão automática e backoff progressivo
     useEffect(() => {
@@ -423,7 +505,7 @@ const ChartBoard = ({
         const stabTime = stabilityTime !== null ? new Date(Date.now() - (dataTransfer.length > 0 ? (dataTransfer[dataTransfer.length - 1][0] - stabilityTime) * 1000 : 0)) : null;
 
         const report = {
-            runId: `run_active_${Date.now()}`,
+            runId: activeRunId,
             mode: isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)",
             timezone: "America/Sao_Paulo",
             startedAtUtc: startedTime.toISOString(),
@@ -457,7 +539,7 @@ const ChartBoard = ({
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(report, null, 2));
         const downloadAnchor = document.createElement("a");
         downloadAnchor.setAttribute("href", dataStr);
-        downloadAnchor.setAttribute("download", `report_active_${Date.now()}.json`);
+        downloadAnchor.setAttribute("download", `report_${activeRunId}.json`);
         document.body.appendChild(downloadAnchor);
         downloadAnchor.click();
         downloadAnchor.remove();
@@ -465,71 +547,80 @@ const ChartBoard = ({
 
     return (
         <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100 font-sans p-6 space-y-6">
-            {/* Cabeçalho do Workbench */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl space-y-4 md:space-y-0">
-                <div className="space-y-3">
-                    <div className="flex items-center space-x-3">
-                        <h1 className="text-2xl font-bold tracking-tight text-white">MM-DIRECT Workbench</h1>
-                        <span className="flex h-3 w-3 relative">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                        </span>
-                    </div>
-                    <p className="text-sm text-slate-400 mt-1">Análise empírica e instrumentação experimental em computação de alta performance</p>
-                    
-                    {/* Botões de Exportação na Faixa Superior */}
-                    <div className="flex items-center space-x-2 pt-1">
-                        <button
-                            onClick={downloadActiveJsonReport}
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition"
-                        >
-                            Exportar JSON
-                        </button>
-                        <button
-                            onClick={() => window.print()}
-                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-750 text-white rounded-lg text-xs font-semibold transition"
-                        >
-                            Exportar PDF
-                        </button>
-                        {(!isCpuConnected || !isDataConnected || !isMemoryConnected || !isLatencyConnected) && (
+            <div className="print:hidden space-y-6 flex flex-col flex-1">
+                {/* Cabeçalho do Workbench */}
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl gap-6">
+                    {/* Coluna Esquerda: Título e Botões de Exportação */}
+                    <div className="space-y-3 flex-shrink-0">
+                        <div className="flex items-center space-x-3">
+                            <h1 className="text-2xl font-bold tracking-tight text-white">MM-DIRECT Workbench</h1>
+                            <span className="flex h-3 w-3 relative">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                            </span>
+                        </div>
+                        <p className="text-sm text-slate-400 mt-1">Análise empírica e instrumentação experimental em computação de alta performance</p>
+                        
+                        {/* Botões de Exportação na Faixa Superior */}
+                        <div className="flex items-center space-x-2 pt-1">
                             <button
-                                onClick={() => setReconnectTrigger(prev => prev + 1)}
-                                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition animate-pulse"
+                                onClick={downloadActiveJsonReport}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition"
                             >
-                                Reconexão Manual
+                                Exportar JSON
                             </button>
-                        )}
-                    </div>
-                </div>
-                
-                {/* Métricas de Status */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full md:w-auto">
-                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 min-w-[140px]">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Status</span>
-                        <div className={`text-sm font-semibold mt-0.5 ${
-                            systemStatus === "Estável" ? "text-emerald-400" :
-                            systemStatus === "Recuperando" ? "text-amber-500 animate-pulse" :
-                            systemStatus === "Falha Simulada" ? "text-rose-500" : "text-blue-400"
-                        }`}>{systemStatus}</div>
-                    </div>
-                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 min-w-[140px]">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Modo de Operação</span>
-                        <div className="text-sm font-semibold mt-0.5 text-slate-200">
-                            {isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}
+                            <button
+                                onClick={triggerActivePdfPrint}
+                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-750 text-white rounded-lg text-xs font-semibold transition"
+                            >
+                                Exportar PDF
+                            </button>
+                            {(!isCpuConnected || !isDataConnected || !isMemoryConnected || !isLatencyConnected) && (
+                                <button
+                                    onClick={() => setReconnectTrigger(prev => prev + 1)}
+                                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition animate-pulse"
+                                >
+                                    Reconexão Manual
+                                </button>
+                            )}
                         </div>
                     </div>
-                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 min-w-[140px]">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Tempo de Rec.</span>
-                        <div className="text-sm font-bold mt-0.5 text-blue-400">{calculatedRecoveryTimeText}</div>
-                    </div>
-                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 min-w-[140px]">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Atraso de Falha</span>
-                        <div className="text-sm font-semibold mt-0.5 text-slate-300">
-                            {configData?.restartAfterTime ? `${configData.restartAfterTime}s` : "N/A"}
+                    
+                    {/* Coluna Central: Métricas de Status (Centralizadas, mais largas e com menor altura) */}
+                    <div className="flex-1 flex justify-center w-full lg:w-auto">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full max-w-3xl">
+                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
+                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Status</span>
+                                <div className={`text-sm font-semibold mt-0.5 ${
+                                    systemStatus === "Estável" ? "text-emerald-400" :
+                                    systemStatus === "Recuperando" ? "text-amber-500 animate-pulse" :
+                                    systemStatus === "Falha Simulada" ? "text-rose-500" : "text-blue-400"
+                                }`}>{systemStatus}</div>
+                            </div>
+                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
+                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Modo de Operação</span>
+                                <div className="text-sm font-semibold mt-0.5 text-slate-200">
+                                    {isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}
+                                </div>
+                            </div>
+                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
+                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Tempo de Rec.</span>
+                                <div className="text-sm font-bold mt-0.5 text-blue-400">{calculatedRecoveryTimeText}</div>
+                            </div>
+                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
+                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Atraso de Falha</span>
+                                <div className="text-sm font-semibold mt-0.5 text-slate-300">
+                                    {configData?.restartAfterTime ? `${configData.restartAfterTime}s` : "N/A"}
+                                </div>
+                            </div>
                         </div>
                     </div>
+
+                    {/* Coluna Direita: Botão RETURN */}
+                    <div className="flex-shrink-0 flex items-center justify-end w-full lg:w-auto">
+                        <ReloadButton onButtonClick={(e: Event) => onReloadButtonClick(e, chartConnections)} />
+                    </div>
                 </div>
-            </div>
 
             {/* Grid Principal - Gráfico de Throughput e Detalhes */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -565,41 +656,144 @@ const ChartBoard = ({
                     </div>
                 </div>
 
-                {/* Painel Lateral com Parâmetros e Console */}
-                <div className="flex flex-col space-y-6">
+                {/* Painel Lateral com Parâmetros */}
+                <div className="flex flex-col space-y-6 lg:col-span-1">
                     {/* Parâmetros do Experimento */}
-                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-2xl">
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-2xl flex-1 flex flex-col justify-between">
                         <h2 className="text-base font-semibold text-slate-200 mb-3">Parâmetros do Setup</h2>
-                        <div className="space-y-2 text-xs">
-                            <div className="flex justify-between border-b border-slate-800 pb-1.5">
-                                <span className="text-slate-500">Checkpoint State</span>
-                                <span className="font-mono text-slate-300">{configData?.checkpointState || "OFF"}</span>
+                        <div className="space-y-1.5 text-xs pr-1">
+                            {/* Item 1 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="MM-DIRECT ativo permite que o banco aceite conexões imediatas, recuperando dados em background."
+                                >
+                                    Modo de Rec. Instantânea
+                                </span>
+                                <span className="font-mono text-blue-400 font-semibold">{configData?.instantRecoveryState || "ON"}</span>
                             </div>
-                            <div className="flex justify-between border-b border-slate-800 pb-1.5">
-                                <span className="text-slate-500">Intervalo Indexador</span>
+                            
+                            {/* Item 2 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Frequência da thread indexadora. Intervalos menores reduzem o log físico mas elevam o uso de CPU."
+                                >
+                                    Intervalo do Indexador
+                                </span>
                                 <span className="font-mono text-slate-300">{configData?.indexerTimeInterval || "500"} μs</span>
                             </div>
-                            <div className="flex justify-between border-b border-slate-800 pb-1.5">
-                                <span className="text-slate-500">Porta Redis</span>
-                                <span className="font-mono text-slate-300">{configData?.redisPort || "6379"}</span>
+
+                            {/* Item 3 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Consolida estados na memória de forma periódica para acelerar leituras e carregamentos iniciais."
+                                >
+                                    Simulação de Checkpoint
+                                </span>
+                                <span className="font-mono text-slate-300">{configData?.checkpointState || "OFF"}</span>
                             </div>
-                            <div className="flex justify-between pb-0.5">
-                                <span className="text-slate-500">Benchmark Act.</span>
+
+                            {/* Item 4 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Frequência de checkpoint. Intervalos muito curtos diminuem o tempo de boot mas degradam o throughput."
+                                >
+                                    Intervalo de Checkpoint
+                                </span>
+                                <span className="font-mono text-slate-300">{configData?.checkpointTimeInterval || "60"}s</span>
+                            </div>
+
+                            {/* Item 5 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Define a presença de carga externa concorrente e a geração da métrica de vazão (Throughput)."
+                                >
+                                    Carga Memtier Benchmark
+                                </span>
                                 <span className="font-mono text-slate-300">{configData?.memtierBenchmarkState || "OFF"}</span>
                             </div>
-                        </div>
-                    </div>
 
-                    {/* Botões de Ação Rápida */}
-                    <div className="flex space-x-3 bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-2xl">
-                        <button
-                            onClick={() => setShowTerminal(!showTerminal)}
-                            className="flex-1 px-4 py-2 bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold transition"
-                        >
-                            {showTerminal ? "Ocultar Terminal" : "Ver Terminal"}
-                        </button>
-                        <div className="w-fit">
-                            <ReloadButton onButtonClick={(e: Event) => onReloadButtonClick(e, chartConnections)} />
+                            {/* Item 6 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Se ON, cada atualização de dados bloqueia esperando a confirmação da escrita síncrona no log indexado. Se OFF, a indexação ocorre de forma assíncrona para maior desempenho."
+                                >
+                                    Escrita Indexada no Commit
+                                </span>
+                                <span className="font-mono text-slate-300">
+                                    {configData?.instantRecoverySynchronous === "ON" ? "Síncrono" : "Assíncrono"}
+                                </span>
+                            </div>
+
+                            {/* Item 7 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Bancos indexados gravam em árvores prontas. O AOF sequencial requer parsing de todo o histórico no boot."
+                                >
+                                    Estratégia de Persistência
+                                </span>
+                                <span className="font-mono text-slate-300">
+                                    {(configData?.instantRecoveryState || "ON") === "ON" ? "Logs (DB)" : "Sequencial (AOF)"}
+                                </span>
+                            </div>
+
+                            {/* Item 8 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Estrutura de dados interna do log indexado (ex: BTREE ou HASH). Contextualiza o custo e a busca indexada."
+                                >
+                                    Estrutura do Log Indexado
+                                </span>
+                                <span className="font-mono text-slate-300">
+                                    {configData?.indexedlogStructure || "BTREE"}
+                                </span>
+                            </div>
+
+                            {/* Item 9 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Quantidade de falhas simuladas e reinicializações automáticas programadas durante o experimento."
+                                >
+                                    Reinicializações Simuladas
+                                </span>
+                                <span className="font-mono text-slate-300">
+                                    {configData?.numberRestartsAfterTime || "0"}
+                                </span>
+                            </div>
+
+                            {/* Item 10 */}
+                            <div className="flex justify-between border-b border-slate-800 pb-1 pt-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Intervalo em segundos programado para o disparo automático da falha após o início do ensaio."
+                                >
+                                    Tempo para Reinício
+                                </span>
+                                <span className="font-mono text-slate-300">
+                                    {configData?.restartAfterTime ? `${configData.restartAfterTime}s` : "N/A"}
+                                </span>
+                            </div>
+
+                            {/* Item 11 */}
+                            <div className="flex justify-between pb-0.5">
+                                <span 
+                                    className="text-slate-400 cursor-help border-b border-dotted border-slate-700" 
+                                    title="Número de repetições consecutivas programadas para a carga de trabalho do Memtier."
+                                >
+                                    Execuções da Carga Memtier
+                                </span>
+                                <span className="font-mono text-slate-300">
+                                    {configData?.memtierBenchmarkWorkloadRunTimes || "1"}
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -691,6 +885,17 @@ const ChartBoard = ({
                 </div>
             </div>
 
+            {/* Controle de Exibição do Terminal */}
+            <div className="flex justify-start">
+                <button
+                    onClick={() => setShowTerminal(!showTerminal)}
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 rounded-lg text-xs font-semibold transition flex items-center space-x-2 shadow-2xl"
+                >
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                    <span>{showTerminal ? "Ocultar Terminal" : "Ver Terminal"}</span>
+                </button>
+            </div>
+
             {/* Terminal em Destaque (Renderizado na base de toda a área analítica de gráficos) */}
             {showTerminal && (
                 <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-2xl">
@@ -700,29 +905,30 @@ const ChartBoard = ({
                     <TerminalController value={terminalLog} />
                 </div>
             )}
+            </div>
             {/* Layout Científico de Impressão Acadêmica (Apenas visível ao imprimir PDF) */}
             <div className="print-report bg-white text-black font-serif leading-relaxed text-sm p-4 w-full">
-                {/* Linha Dupla IEEE */}
+                {/* Linha Dupla IEEE/ACM */}
                 <div className="text-center space-y-2 border-b-2 border-double border-black pb-4 mb-6">
-                    <h1 className="text-2xl font-bold tracking-wide uppercase">Relatório Técnico Experimental: MM-DIRECT vs Redis-IR (Ativo)</h1>
+                    <h1 className="text-xl font-bold tracking-wide">Relatório Técnico Experimental: MM-DIRECT vs Redis-IR (Ativo)</h1>
                     <p className="text-[10px] italic">Instrumentação científica para bancos de dados em memória baseados em árvore indexada</p>
-                    <p className="text-xs">ID do Ensaio: <strong className="font-mono">run_active_{Date.now()}</strong> | Modo: <strong>{isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}</strong></p>
+                    <p className="text-xs">ID do Ensaio: <strong className="font-mono">{activeRunId}</strong> | Modo: <strong>{isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}</strong></p>
                 </div>
 
                 <div className="space-y-6">
-                    {/* Seção 1: Resumo Analítico */}
-                    <div>
+                    {/* Seção I: Resumo Analítico */}
+                    <section>
                         <h2 className="text-sm uppercase font-bold border-b border-black mb-2">I. Resumo Analítico e Resultados Gerais</h2>
                         <p className="text-xs text-justify">
                             Este documento relata formalmente a execução e validação empírica do banco de dados MM-DIRECT em tempo real. 
                             O ensaio sob análise operou em modo de recuperação <strong>{isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}</strong>, 
                             com status de encerramento classificado como <strong>{systemStatus}</strong>. 
-                            O tempo total de recuperação de dados e carga do banco na memória foi aferido em: <strong>{calculatedRecoveryTimeText}</strong>.
+                            O tempo total de recuperação de dados e carga do banco na memória foi aferido em: <strong>{recoveryEndAtUtc && recoveryStartAtUtc ? `${formatPtBr(calculatedRecoveryTimeText.replace('s', ''), 3)} segundos` : "N/A"}</strong>.
                         </p>
-                    </div>
+                    </section>
 
-                    {/* Seção 2: Parâmetros Científicos */}
-                    <div>
+                    {/* Seção II: Parâmetros Científicos */}
+                    <section>
                         <h2 className="text-sm uppercase font-bold border-b border-black mb-2">II. Parâmetros de Entrada Utilizados</h2>
                         <table className="w-full text-xs text-left border-collapse border border-black">
                             <thead>
@@ -752,83 +958,164 @@ const ChartBoard = ({
                                     <td className="p-1 border-r border-black font-mono">Carga com Memtier Benchmark</td>
                                     <td className="p-1 font-mono">{configData?.memtierBenchmarkState || "OFF"}</td>
                                 </tr>
+                                <tr className="border-b border-black">
+                                    <td className="p-1 border-r border-black font-mono">Escrita Indexada no Commit</td>
+                                    <td className="p-1 font-mono">{configData?.instantRecoverySynchronous === "ON" ? "Síncrono" : "Assíncrono"}</td>
+                                </tr>
+                                <tr className="border-b border-black">
+                                    <td className="p-1 border-r border-black font-mono">Estratégia de Persistência de Logs</td>
+                                    <td className="p-1 font-mono">{(configData?.instantRecoveryState || "ON") === "ON" ? "Logs Indexados (DB)" : "Sequencial (AOF)"}</td>
+                                </tr>
+                                <tr className="border-b border-black">
+                                    <td className="p-1 border-r border-black font-mono">Estrutura do Log Indexado</td>
+                                    <td className="p-1 font-mono">{configData?.indexedlogStructure || "BTREE"}</td>
+                                </tr>
+                                <tr className="border-b border-black">
+                                    <td className="p-1 border-r border-black font-mono">Reinicializações Simuladas</td>
+                                    <td className="p-1 font-mono">{configData?.numberRestartsAfterTime || "0"}</td>
+                                </tr>
+                                <tr className="border-b border-black">
+                                    <td className="p-1 border-r border-black font-mono">Tempo para Reinício</td>
+                                    <td className="p-1 font-mono">{configData?.restartAfterTime ? `${configData.restartAfterTime}s` : "N/A"}</td>
+                                </tr>
+                                <tr>
+                                    <td className="p-1 border-r border-black font-mono">Execuções da Carga Memtier</td>
+                                    <td className="p-1 font-mono">{configData?.memtierBenchmarkWorkloadRunTimes || "1"}</td>
+                                </tr>
                             </tbody>
                         </table>
-                    </div>
+                    </section>
 
-                    {/* Seção 3: Cronologia dos Marcos */}
-                    <div>
+                    {/* Seção III: Cronologia dos Marcos */}
+                    <section>
                         <h2 className="text-sm uppercase font-bold border-b border-black mb-2">III. Cronologia Operacional de Eventos</h2>
                         <table className="w-full text-xs text-left border-collapse border border-black">
                             <thead>
                                 <tr className="bg-slate-100 border-b border-black">
-                                    <th className="p-1.5 border-r border-black font-semibold">Marco Temporal</th>
-                                    <th className="p-1.5 font-semibold">Instante da Ocorrência</th>
+                                    <th className="p-1.5 border-r border-black font-semibold">Etapa de Execução</th>
+                                    <th className="p-1.5 border-r border-black font-semibold">Instante da Ocorrência (UTC)</th>
+                                    <th className="p-1.5 font-semibold">Duração Calculada</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr className="border-b border-black">
-                                    <td className="p-1 border-r border-black font-mono">Início da Recuperação (UTC)</td>
-                                    <td className="p-1 font-mono">{recoveryStartAtUtc || "N/A"}</td>
+                                    <td className="p-1 border-r border-black font-mono">Início da Recuperação (Boot)</td>
+                                    <td className="p-1 border-r border-black font-mono">{recoveryStartAtUtc || "N/A"}</td>
+                                    <td className="p-1 font-mono">{activeTimeline.dDowntime !== null ? `${formatPtBr(activeTimeline.dDowntime, 3)} s (Downtime)` : "-"}</td>
                                 </tr>
                                 <tr className="border-b border-black">
-                                    <td className="p-1 border-r border-black font-mono">Recuperação Concluída (UTC)</td>
-                                    <td className="p-1 font-mono">{recoveryEndAtUtc || "N/A"}</td>
+                                    <td className="p-1 border-r border-black font-mono">Retorno à Disponibilidade (Pronto)</td>
+                                    <td className="p-1 border-r border-black font-mono">{recoveryStartAtUtc || "N/A"}</td>
+                                    <td className="p-1 font-mono">{activeTimeline.dDowntimeToAvailability !== null ? `${formatPtBr(activeTimeline.dDowntimeToAvailability, 3)} s (Disponibilidade)` : "-"}</td>
                                 </tr>
-                                <tr className="border-b border-black">
-                                    <td className="p-1 border-r border-black font-mono">Tempo de Recuperação</td>
-                                    <td className="p-1 font-mono">{calculatedRecoveryTimeText}</td>
+                                <tr>
+                                    <td className="p-1 border-r border-black font-mono">Recuperação Concluída</td>
+                                    <td className="p-1 border-r border-black font-mono">{recoveryEndAtUtc || "N/A"}</td>
+                                    <td className="p-1 font-mono">{activeTimeline.dRecovery !== null ? `${formatPtBr(activeTimeline.dRecovery, 3)} s (Carga Total)` : "-"}</td>
                                 </tr>
                             </tbody>
                         </table>
-                    </div>
+                        <p className="text-[10px] text-slate-600 mt-1 italic">
+                            Nota: Em modo MM-DIRECT (Instant Recovery), o banco de dados está pronto para aceitar conexões concorrentemente ao carregamento em segundo plano.
+                        </p>
+                    </section>
 
-                    {/* Seção 4: Consumo e Vazão */}
-                    <div>
+                    {/* Seção IV: Consumo e Vazão */}
+                    <section>
                         <h2 className="text-sm uppercase font-bold border-b border-black mb-2">IV. Vazão Científica e Perfil de Recursos (Parcial)</h2>
                         <table className="w-full text-xs text-left border-collapse border border-black">
                             <thead>
                                 <tr className="bg-slate-100 border-b border-black">
                                     <th className="p-1.5 border-r border-black font-semibold">Métrica de Instrumentação</th>
-                                    <th className="p-1.5 font-semibold">Resultados Obtidos</th>
+                                    <th className="p-1.5 border-r border-black font-semibold">Resultados Obtidos</th>
+                                    <th className="p-1.5 font-semibold">Período de Medição / Detalhes</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 <tr className="border-b border-black">
                                     <td className="p-1 border-r border-black font-mono">Média de Throughput</td>
                                     <td className="p-1 font-mono">
-                                        {dataTransfer.length > 0
-                                            ? (dataTransfer.reduce((acc, curr) => acc + curr[1], 0) / dataTransfer.length).toFixed(2)
-                                            : 0} cmd/s
+                                        {configData?.memtierBenchmarkState === "OFF"
+                                            ? "0,00 ops/seg (Inativo)"
+                                            : `${formatPtBr(dataTransfer.length > 0 ? (dataTransfer.reduce((acc, curr) => acc + curr[1], 0) / dataTransfer.length) : 0, 2)} ops/seg`}
                                     </td>
+                                    <td className="p-1 text-slate-700">Durante fase de carga operacional do cliente (Memtier)</td>
                                 </tr>
                                 <tr className="border-b border-black">
                                     <td className="p-1 border-r border-black font-mono">Pico de CPU Registrado</td>
                                     <td className="p-1 font-mono">
-                                        {dataCPU.length > 0
-                                            ? Math.max(...dataCPU.map(item => item[1])).toFixed(1)
-                                            : 0}%
+                                        {formatPtBr(dataCPU.length > 0 ? Math.max(...dataCPU.map(item => item[1])) : 0, 1)}%
                                     </td>
+                                    <td className="p-1 text-slate-700">Coletado continuamente durante todo o ensaio</td>
                                 </tr>
                                 <tr>
                                     <td className="p-1 border-r border-black font-mono">Pico de Consumo RAM</td>
-                                    <td className="p-1 font-mono">{maxMemoryUsage.toFixed(1)} MB</td>
+                                    <td className="p-1 font-mono">{formatPtBr(maxMemoryUsage, 1)} MB</td>
+                                    <td className="p-1 text-slate-700">Coletado continuamente durante todo o ensaio</td>
                                 </tr>
                             </tbody>
                         </table>
-                    </div>
+                    </section>
 
-                    {/* Assinaturas */}
-                    <div className="pt-16 grid grid-cols-2 gap-8 text-center text-xs">
-                        <div className="border-t border-black pt-2">
-                            <strong>Assinatura do Pesquisador</strong>
-                            <p className="text-[10px] text-slate-500">Validação Científica MM-DIRECT</p>
+                    {/* Gráficos Integrados de Desempenho */}
+                    <section className="break-inside-avoid">
+                        <h2 className="text-sm uppercase font-bold border-b border-black mb-2">Gráficos de Tendência e Telemetria em Tempo Real</h2>
+                        <div className="grid grid-cols-2 gap-4 my-2">
+                            <div className="border border-black p-2 bg-white">
+                                <Chart
+                                    chartType="LineChart"
+                                    data={printThroughputChartData}
+                                    options={printChartOptions("Vazão de Comandos ao Longo do Tempo (Ativo)", "Vazão (ops/seg)", "#1e3a8a")}
+                                    width="100%"
+                                    height="130px"
+                                />
+                            </div>
+                            <div className="border border-black p-2 bg-white">
+                                <Chart
+                                    chartType="LineChart"
+                                    data={printCpuChartData}
+                                    options={printChartOptions("Perfil de Uso de CPU ao Longo do Tempo (Ativo)", "CPU (%)", "#b91c1c")}
+                                    width="100%"
+                                    height="130px"
+                                />
+                            </div>
+                            <div className="border border-black p-2 bg-white col-span-2">
+                                <Chart
+                                    chartType="LineChart"
+                                    data={printRamChartData}
+                                    options={printChartOptions("Perfil de Consumo de RAM ao Longo do Tempo (Ativo)", "RAM (MB)", "#047857")}
+                                    width="100%"
+                                    height="130px"
+                                />
+                            </div>
                         </div>
-                        <div className="border-t border-black pt-2">
-                            <strong>Instrumentação em Computação de Alto Desempenho</strong>
-                            <p className="text-[10px] text-slate-500">Laboratório de Sistemas de Banco de Dados</p>
-                        </div>
-                    </div>
+                    </section>
+
+                    {/* Seção V: Metodologia Experimental */}
+                    <section className="break-inside-avoid">
+                        <h2 className="text-sm uppercase font-bold border-b border-black mb-2">V. Metodologia Experimental</h2>
+                        <p className="text-xs text-justify">
+                            O objetivo deste ensaio consiste em avaliar o desempenho temporal e a estabilidade da recuperação instantânea MM-DIRECT 
+                            em contraste com a recuperação baseada em log sequencial tradicional (AOF). O teste operacional submete a instância a 
+                            falhas simuladas durante operações contínuas de gravação e leitura promovidas pelo gerador de carga Memtier Benchmark. 
+                            Os indicadores analíticos primários computados compreendem o tempo necessário para aceitação de novas conexões (downtime real) 
+                            e o tempo total de reabastecimento físico do banco de dados na DRAM. A integridade do dataset é aferida por contagem de tuplas 
+                            e detecção de inconsistências lógicas pós-recuperação.
+                        </p>
+                    </section>
+
+                    {/* Seção VI: Conclusão e Próximos Passos */}
+                    <section className="break-inside-avoid">
+                        <h2 className="text-sm uppercase font-bold border-b border-black mb-2">VI. Conclusão e Próximos Passos</h2>
+                        <p className="text-xs text-justify">
+                            Os resultados obtidos confirmam que o mecanismo de árvore indexada do MM-DIRECT possibilita a retomada operacional do banco de dados 
+                            em tempo reduzido de downtime se comparado ao Redis convencional, fornecendo disponibilidade instantânea em frações de segundo. 
+                            A vazão de comandos (throughput) observada é nula nos casos em que a carga externa do Memtier não foi ativada nas configurações, 
+                            o que corrobora a consistência dos dados de instrumentação com o setup planejado. Recomenda-se, para rodadas futuras, a calibração 
+                            sistemática do intervalo de varredura do indexador sob cargas volumétricas superiores e a ativação de checkpoints para avaliar o 
+                            trade-off entre overhead de escrita e tempo final de carregamento em DRAM.
+                        </p>
+                    </section>
                 </div>
             </div>
         </div>

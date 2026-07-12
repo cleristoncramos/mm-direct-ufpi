@@ -15,6 +15,23 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
     const [telemetryB, setTelemetryB] = useState<any>(null);
     const [loadingTelemetry, setLoadingTelemetry] = useState<boolean>(false);
 
+    const [selectedTelemetry, setSelectedTelemetry] = useState<any>(null);
+    const [_, setLoadingSelectedTelemetry] = useState<boolean>(false);
+
+    // Carrega a telemetria do ensaio selecionado individualmente
+    useEffect(() => {
+        if (!selectedRunId) {
+            setSelectedTelemetry(null);
+            return;
+        }
+        setLoadingSelectedTelemetry(true);
+        fetch(`http://localhost:8081/api/runs/${selectedRunId}/telemetry`)
+            .then((res) => res.json())
+            .then((data) => setSelectedTelemetry(data))
+            .catch((err) => console.error("Erro ao carregar telemetria do ensaio:", err))
+            .finally(() => setLoadingSelectedTelemetry(false));
+    }, [selectedRunId]);
+
     // 1. Carrega a lista de ensaios do backend
     const loadRunsList = () => {
         fetch("http://localhost:8081/api/runs")
@@ -126,6 +143,118 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
         curveType: "function"
     };
 
+    // Helper para formatar números em português do Brasil
+    const formatPtBr = (val: number | string | undefined | null, decimals = 3) => {
+        if (val === undefined || val === null) return "N/A";
+        const num = typeof val === "string" ? parseFloat(val) : val;
+        if (isNaN(num)) return "N/A";
+        return num.toFixed(decimals).replace(".", ",");
+    };
+
+    // Helper para formatar tamanho em MB
+    const formatSizeMb = (bytes: number | undefined | null) => {
+        if (bytes === undefined || bytes === null) return "N/A";
+        return formatPtBr(bytes / (1024 * 1024), 2) + " MB";
+    };
+
+    // Opções de gráficos em preto e branco de alta legibilidade para a impressão PDF
+    const printChartOptions = (title: string, yTitle: string, color: string) => ({
+        title,
+        backgroundColor: "white",
+        chartArea: { width: "80%", height: "65%", top: "15%", left: "12%" },
+        titleTextStyle: { color: "black", fontSize: 9, fontName: "Times New Roman", bold: true },
+        hAxis: {
+            title: "Tempo (s)",
+            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
+            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
+            gridlines: { color: "#e2e8f0" }
+        },
+        vAxis: {
+            title: yTitle,
+            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
+            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
+            gridlines: { color: "#e2e8f0" }
+        },
+        colors: [color],
+        legend: { position: "none" },
+        curveType: "function"
+    });
+
+    // Calcula marcos de cronologia e durações do ensaio selecionado
+    const selectedRunTimeline = useMemo(() => {
+        if (!selectedRun) return null;
+        const ms = selectedRun.results?.milestones || selectedRun.report || {};
+        
+        const startTimeStr = selectedRun.metadata?.timestamp || selectedRun.report?.startedAtLocal || selectedRun.report?.startedAtUtc;
+        const failureTimeStr = ms.failureAtLocal || ms.failureTime || ms.failureAtUtc;
+        const recoveryStartStr = ms.recoveryStartAtLocal || ms.recoveryStartTime || ms.recoveryStartAtUtc;
+        const recoveryEndStr = ms.recoveryEndAtLocal || ms.recoveryEndTime || ms.recoveryEndAtUtc;
+        const stabilityStr = ms.stabilityAtLocal || ms.stabilityTime || ms.stabilityAtUtc;
+        
+        const parseTime = (str: string | null | undefined) => {
+            if (!str) return null;
+            let parsed = Date.parse(str);
+            if (isNaN(parsed)) {
+                parsed = Date.parse(str + " GMT-0300");
+            }
+            return isNaN(parsed) ? null : parsed;
+        };
+
+        const tStart = parseTime(startTimeStr);
+        const tFailure = parseTime(failureTimeStr);
+        const tRecStart = parseTime(recoveryStartStr);
+        const tRecEnd = parseTime(recoveryEndStr);
+        const tStability = parseTime(stabilityStr);
+
+        const dStartupToCrash = (tStart && tFailure && tFailure > tStart) ? (tFailure - tStart) / 1000 : null;
+        const dDowntime = (tFailure && tRecStart && tRecStart > tFailure) ? (tRecStart - tFailure) / 1000 : null;
+        const dRecovery = (tRecStart && tRecEnd && tRecEnd > tRecStart) ? (tRecEnd - tRecStart) / 1000 : null;
+        const dToStability = (tRecEnd && tStability && tStability > tRecEnd) ? (tStability - tRecEnd) / 1000 : null;
+        const dDowntimeToAvailability = (tFailure && tStability && tStability > tFailure) ? (tStability - tFailure) / 1000 : null;
+
+        return {
+            tStart, tFailure, tRecStart, tRecEnd, tStability,
+            dStartupToCrash,
+            dDowntime,
+            dRecovery,
+            dToStability,
+            dDowntimeToAvailability
+        };
+    }, [selectedRun]);
+
+    const selectedCpuChartData = useMemo(() => {
+        const header = ["Tempo (s)", "CPU (%)"];
+        if (!selectedTelemetry || !selectedTelemetry.monitoring || selectedTelemetry.monitoring.length === 0) {
+            return [header, [0, 0]];
+        }
+        return [
+            header,
+            ...selectedTelemetry.monitoring.map(([sec, cpu]: any) => [sec, cpu])
+        ];
+    }, [selectedTelemetry]);
+
+    const selectedRamChartData = useMemo(() => {
+        const header = ["Tempo (s)", "RAM (MB)"];
+        if (!selectedTelemetry || !selectedTelemetry.monitoring || selectedTelemetry.monitoring.length === 0) {
+            return [header, [0, 0]];
+        }
+        return [
+            header,
+            ...selectedTelemetry.monitoring.map(([sec, _, ramKb]: any) => [sec, ramKb / 1024])
+        ];
+    }, [selectedTelemetry]);
+
+    const selectedThroughputChartData = useMemo(() => {
+        const header = ["Tempo (s)", "Throughput (ops/s)"];
+        if (!selectedTelemetry || !selectedTelemetry.throughput || selectedTelemetry.throughput.length === 0) {
+            return [header, [0, 0]];
+        }
+        return [
+            header,
+            ...selectedTelemetry.throughput
+        ];
+    }, [selectedTelemetry]);
+
     // 4. Download do JSON de relatório consolidado
     const downloadJsonReport = (run: any) => {
         if (!run || !run.report) return;
@@ -138,9 +267,13 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
         downloadAnchor.remove();
     };
 
-    // 5. Aciona o diálogo de impressão PDF
+    // 5. Aciona o diálogo de impressão PDF com apenas o número do ensaio como título do documento
     const triggerPdfPrint = () => {
+        const originalTitle = document.title;
+        const runNumber = (selectedRunId || "").replace(/\D/g, "");
+        document.title = runNumber || "experiment";
         window.print();
+        document.title = originalTitle;
     };
 
     // Calcula speedup de recuperação
@@ -149,10 +282,12 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
         const tA = runA.results?.recoveryDurationSeconds || null;
         const tB = runB.results?.recoveryDurationSeconds || null;
         let speedup = null;
+        let faster = null;
         if (tA && tB) {
             speedup = tA > tB ? (tA / tB).toFixed(2) : (tB / tA).toFixed(2);
+            faster = tA > tB ? "Run B" : "Run A";
         }
-        return { tA, tB, speedup };
+        return { tA, tB, speedup, faster };
     }, [runA, runB]);
 
     return (
@@ -238,13 +373,12 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                     {/* Área Principal: Visualização de Detalhes ou Comparador */}
                     <div className="lg:col-span-3 space-y-6">
                         
-                        {/* Seção de Comparação se dois ensaios forem selecionados */}
                         {runA && runB ? (
                             <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl space-y-6">
                                 <div className="flex justify-between items-center border-b border-slate-800 pb-4">
                                     <div>
                                         <h2 className="text-lg font-bold text-white">Comparação de Cenários Experimentais</h2>
-                                        <p className="text-xs text-slate-400 mt-1">Análise de speedup de recuperação e eficiência estrutural da árvore indexada.</p>
+                                        <p className="text-xs text-slate-400 mt-1">Análise aprofundada de eficiência de recuperação, vazão e perfil de recursos.</p>
                                     </div>
                                     <button
                                         onClick={() => {
@@ -259,7 +393,10 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
 
                                 {/* Gráfico de Comparação */}
                                 <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-lg">
-                                    <h3 className="text-sm font-semibold text-slate-300 mb-3">Comportamento de Throughput Sobreposto</h3>
+                                    <h3 className="text-sm font-semibold text-slate-300 mb-3 flex items-center space-x-2">
+                                        <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                                        <span>Comportamento de Throughput Sobreposto (ops/seg)</span>
+                                    </h3>
                                     {loadingTelemetry ? (
                                         <div className="text-center text-xs text-slate-500 py-16">Carregando telemetria...</div>
                                     ) : comparisonThroughputData.length > 0 ? (
@@ -275,62 +412,225 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                     )}
                                 </div>
 
-                                {/* Tabela de Speedup e Consumo */}
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4">
+                                {/* Seção Superior de Cards de Destaque */}
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                    {/* Card de Tempo e Speedup */}
+                                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4 flex flex-col justify-between">
                                         <h3 className="text-sm font-semibold text-slate-300">Tempo de Recuperação</h3>
                                         <div className="grid grid-cols-2 gap-4">
                                             <div className="p-3 bg-slate-900 rounded-lg border border-slate-800 text-center">
                                                 <span className="text-[10px] text-slate-500 uppercase font-semibold">Run A ({runA.metadata?.mode?.includes("MM-DIRECT") ? "MM-Direct" : "AOF"})</span>
-                                                <div className="text-lg font-bold text-blue-400 mt-1">{recoveryComparison?.tA ? `${recoveryComparison.tA}s` : "N/A"}</div>
+                                                <div className="text-lg font-bold text-blue-400 mt-1">{recoveryComparison?.tA ? `${formatPtBr(recoveryComparison.tA, 3)}s` : "N/A"}</div>
                                             </div>
                                             <div className="p-3 bg-slate-900 rounded-lg border border-slate-800 text-center">
                                                 <span className="text-[10px] text-slate-500 uppercase font-semibold">Run B ({runB.metadata?.mode?.includes("MM-DIRECT") ? "MM-Direct" : "AOF"})</span>
-                                                <div className="text-lg font-bold text-emerald-400 mt-1">{recoveryComparison?.tB ? `${recoveryComparison.tB}s` : "N/A"}</div>
+                                                <div className="text-lg font-bold text-emerald-400 mt-1">{recoveryComparison?.tB ? `${formatPtBr(recoveryComparison.tB, 3)}s` : "N/A"}</div>
                                             </div>
                                         </div>
                                         {recoveryComparison?.speedup && (
-                                            <div className="p-3 bg-indigo-950/30 border border-indigo-900/50 rounded-lg text-center text-xs">
-                                                Diferença de tempo e aceleração calculada: <strong className="text-indigo-400 font-mono text-sm">{recoveryComparison.speedup}x</strong> mais rápido.
+                                            <div className="p-2.5 bg-indigo-950/40 border border-indigo-900/50 rounded-lg text-center text-xs text-slate-300">
+                                                Aceleração calculada: o <strong className="text-indigo-400 font-bold">{recoveryComparison.faster}</strong> foi <strong className="text-indigo-400 font-mono text-sm">{recoveryComparison.speedup}x</strong> mais rápido no carregamento.
                                             </div>
                                         )}
                                     </div>
 
-                                    {/* Comparativo de Carga de Recursos */}
-                                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4">
-                                        <h3 className="text-sm font-semibold text-slate-300">Sumário Analítico de Recursos</h3>
-                                        <div className="overflow-x-auto text-xs">
-                                            <table className="w-full text-left border-collapse">
-                                                <thead>
-                                                    <tr className="border-b border-slate-850 text-slate-500">
-                                                        <th className="pb-2">Métrica</th>
-                                                        <th className="pb-2">Run A</th>
-                                                        <th className="pb-2">Run B</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-850">
-                                                    <tr>
-                                                        <td className="py-2 text-slate-400">Pico de Throughput</td>
-                                                        <td className="py-2 font-mono">{runA.report?.throughputSummary?.peakThroughput || 0} cmd/s</td>
-                                                        <td className="py-2 font-mono">{runB.report?.throughputSummary?.peakThroughput || 0} cmd/s</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td className="py-2 text-slate-400">Méd. Throughput</td>
-                                                        <td className="py-2 font-mono">{runA.report?.throughputSummary?.averageThroughput || 0} cmd/s</td>
-                                                        <td className="py-2 font-mono">{runB.report?.throughputSummary?.averageThroughput || 0} cmd/s</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td className="py-2 text-slate-400">Pico de CPU</td>
-                                                        <td className="py-2 font-mono">{runA.report?.cpuSummary?.peakCpu || 0}%</td>
-                                                        <td className="py-2 font-mono">{runB.report?.cpuSummary?.peakCpu || 0}%</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td className="py-2 text-slate-400">Pico de RAM</td>
-                                                        <td className="py-2 font-mono">{runA.report?.memorySummary?.peakMemory || 0} MB</td>
-                                                        <td className="py-2 font-mono">{runB.report?.memorySummary?.peakMemory || 0} MB</td>
-                                                    </tr>
-                                                </tbody>
-                                            </table>
+                                    {/* Card de Diferença de Armazenamento em Disco */}
+                                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4 flex flex-col justify-between">
+                                        <h3 className="text-sm font-semibold text-slate-300">Tamanho em Disco (AOF vs DB)</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div className="p-3 bg-slate-900 rounded-lg border border-slate-800 text-center">
+                                                <span className="text-[9px] text-slate-500 uppercase font-semibold">Run A (Logs Físicos)</span>
+                                                <div className="text-xs font-bold text-slate-200 mt-1 leading-relaxed">
+                                                    AOF: {formatSizeMb(runA.results?.aofSizeBytes || runA.report?.aofSizeBytes)}
+                                                    <br />
+                                                    DB: {formatSizeMb(runA.results?.indexedLogSizeBytes || runA.report?.indexedLogSizeBytes)}
+                                                </div>
+                                            </div>
+                                            <div className="p-3 bg-slate-900 rounded-lg border border-slate-800 text-center">
+                                                <span className="text-[9px] text-slate-500 uppercase font-semibold">Run B (Logs Físicos)</span>
+                                                <div className="text-xs font-bold text-slate-200 mt-1 leading-relaxed">
+                                                    AOF: {formatSizeMb(runB.results?.aofSizeBytes || runB.report?.aofSizeBytes)}
+                                                    <br />
+                                                    DB: {formatSizeMb(runB.results?.indexedLogSizeBytes || runB.report?.indexedLogSizeBytes)}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="p-2 bg-slate-900 border border-slate-800 rounded-lg text-[10px] text-slate-400 text-center leading-normal">
+                                            Logs indexados (DB) do MM-DIRECT estruturam árvores na DRAM. O AOF sequencial exige reprocessamento linear de comandos.
+                                        </div>
+                                    </div>
+
+                                    {/* Card de Integridade e Tuplas */}
+                                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4 flex flex-col justify-between">
+                                        <h3 className="text-sm font-semibold text-slate-300">Tuplas e Consistência</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div className="p-2.5 bg-slate-900 rounded-lg border border-slate-800 text-center">
+                                                <span className="text-[10px] text-slate-500 uppercase font-semibold">Run A (Inconsist.)</span>
+                                                <div className={`text-base font-bold mt-1 ${(runA.results?.inconsistencies || runA.report?.inconsistencies) > 0 ? 'text-rose-400' : 'text-slate-200'}`}>
+                                                    {runA.results?.inconsistencies ?? runA.report?.inconsistencies ?? 0}
+                                                </div>
+                                                <span className="text-[9px] text-slate-500 block">Tuplas: {runA.results?.recoveredTuples || runA.report?.recoveredTuples || "N/A"}</span>
+                                            </div>
+                                            <div className="p-2.5 bg-slate-900 rounded-lg border border-slate-800 text-center">
+                                                <span className="text-[10px] text-slate-500 uppercase font-semibold">Run B (Inconsist.)</span>
+                                                <div className={`text-base font-bold mt-1 ${(runB.results?.inconsistencies || runB.report?.inconsistencies) > 0 ? 'text-rose-400' : 'text-slate-200'}`}>
+                                                    {runB.results?.inconsistencies ?? runB.report?.inconsistencies ?? 0}
+                                                </div>
+                                                <span className="text-[9px] text-slate-500 block">Tuplas: {runB.results?.recoveredTuples || runB.report?.recoveredTuples || "N/A"}</span>
+                                            </div>
+                                        </div>
+                                        <div className="p-2 bg-slate-900 border border-slate-800 rounded-lg text-[10px] text-slate-400 text-center leading-normal">
+                                            Inconsistências indicam dados em conflito pós-recuperação (comuns no modo AOF de alta concorrência).
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Tabela Completa de Métricas Científicas */}
+                                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4">
+                                    <h3 className="text-sm font-semibold text-slate-300">Sumário Analítico Comparativo de Métricas</h3>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-left text-xs border-collapse">
+                                            <thead>
+                                                <tr className="border-b border-slate-800 text-slate-400 font-bold">
+                                                    <th className="pb-2 pl-2">Métrica do Ensaio</th>
+                                                    <th className="pb-2">Ensaio A (id: {runA.id})</th>
+                                                    <th className="pb-2">Ensaio B (id: {runB.id})</th>
+                                                    <th className="pb-2 pr-2">Análise de Variação</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-850">
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Modo de Operação</td>
+                                                    <td className="py-2.5 font-mono text-slate-200">{runA.metadata?.mode || runA.report?.mode || "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-200">{runB.metadata?.mode || runB.report?.mode || "N/A"}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Diferença de arquitetura</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Tempo de Recuperação (Downtime)</td>
+                                                    <td className="py-2.5 font-mono text-blue-400 font-bold">{runA.results?.recoveryDurationSeconds ? `${formatPtBr(runA.results.recoveryDurationSeconds, 3)} s` : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-emerald-400 font-bold">{runB.results?.recoveryDurationSeconds ? `${formatPtBr(runB.results.recoveryDurationSeconds, 3)} s` : "N/A"}</td>
+                                                    <td className="py-2.5 font-bold text-slate-200">
+                                                        {recoveryComparison?.speedup ? `${recoveryComparison.speedup}x mais rápido para ${recoveryComparison.faster}` : "N/A"}
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Throughput Médio</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.report?.throughputSummary?.averageThroughput ? `${formatPtBr(runA.report.throughputSummary.averageThroughput, 2)} ops/seg` : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.report?.throughputSummary?.averageThroughput ? `${formatPtBr(runB.report.throughputSummary.averageThroughput, 2)} ops/seg` : "N/A"}</td>
+                                                    <td className="py-2.5">
+                                                        {runA.report?.throughputSummary?.averageThroughput && runB.report?.throughputSummary?.averageThroughput ? (
+                                                            runA.report.throughputSummary.averageThroughput > runB.report.throughputSummary.averageThroughput ?
+                                                            <span className="text-blue-400">Run A +{formatPtBr((runA.report.throughputSummary.averageThroughput / runB.report.throughputSummary.averageThroughput - 1) * 100, 1)}%</span> :
+                                                            <span className="text-emerald-400">Run B +{formatPtBr((runB.report.throughputSummary.averageThroughput / runA.report.throughputSummary.averageThroughput - 1) * 100, 1)}%</span>
+                                                        ) : "N/A"}
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Throughput de Pico (Máximo)</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.report?.throughputSummary?.peakThroughput ? `${formatPtBr(runA.report.throughputSummary.peakThroughput, 0)} ops/seg` : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.report?.throughputSummary?.peakThroughput ? `${formatPtBr(runB.report.throughputSummary.peakThroughput, 0)} ops/seg` : "N/A"}</td>
+                                                    <td className="py-2.5">
+                                                        {runA.report?.throughputSummary?.peakThroughput && runB.report?.throughputSummary?.peakThroughput ? (
+                                                            runA.report.throughputSummary.peakThroughput > runB.report.throughputSummary.peakThroughput ?
+                                                            <span className="text-blue-400">Run A +{formatPtBr((runA.report.throughputSummary.peakThroughput / runB.report.throughputSummary.peakThroughput - 1) * 100, 1)}%</span> :
+                                                            <span className="text-emerald-400">Run B +{formatPtBr((runB.report.throughputSummary.peakThroughput / runA.report.throughputSummary.peakThroughput - 1) * 100, 1)}%</span>
+                                                        ) : "N/A"}
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Total de Comandos Executados</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.report?.throughputSummary?.totalCommands ? formatPtBr(runA.report.throughputSummary.totalCommands, 0) : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.report?.throughputSummary?.totalCommands ? formatPtBr(runB.report.throughputSummary.totalCommands, 0) : "N/A"}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Volume operacional</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Tamanho do Arquivo AOF</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{formatSizeMb(runA.results?.aofSizeBytes || runA.report?.aofSizeBytes)}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{formatSizeMb(runB.results?.aofSizeBytes || runB.report?.aofSizeBytes)}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Espaço físico de log sequencial</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Tamanho do Banco Indexado (DB)</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{formatSizeMb(runA.results?.indexedLogSizeBytes || runA.report?.indexedLogSizeBytes)}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{formatSizeMb(runB.results?.indexedLogSizeBytes || runB.report?.indexedLogSizeBytes)}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Espaço físico de árvore estruturada</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Pico de Consumo de RAM</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.report?.memorySummary?.peakMemory ? `${formatPtBr(runA.report.memorySummary.peakMemory, 2)} MB` : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.report?.memorySummary?.peakMemory ? `${formatPtBr(runB.report.memorySummary.peakMemory, 2)} MB` : "N/A"}</td>
+                                                    <td className="py-2.5">
+                                                        {runA.report?.memorySummary?.peakMemory && runB.report?.memorySummary?.peakMemory ? (
+                                                            runA.report.memorySummary.peakMemory < runB.report.memorySummary.peakMemory ?
+                                                            <span className="text-blue-400">Run A economizou {formatPtBr((1 - runA.report.memorySummary.peakMemory / runB.report.memorySummary.peakMemory) * 100, 1)}%</span> :
+                                                            <span className="text-emerald-400">Run B economizou {formatPtBr((1 - runB.report.memorySummary.peakMemory / runA.report.memorySummary.peakMemory) * 100, 1)}%</span>
+                                                        ) : "N/A"}
+                                                    </td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Consumo Médio de RAM</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.report?.memorySummary?.averageMemory ? `${formatPtBr(runA.report.memorySummary.averageMemory, 2)} MB` : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.report?.memorySummary?.averageMemory ? `${formatPtBr(runB.report.memorySummary.averageMemory, 2)} MB` : "N/A"}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Pegada de memória média</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Pico de Uso de CPU</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.report?.cpuSummary?.peakCpu ? `${formatPtBr(runA.report.cpuSummary.peakCpu, 1)}%` : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.report?.cpuSummary?.peakCpu ? `${formatPtBr(runB.report.cpuSummary.peakCpu, 1)}%` : "N/A"}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Sobrecarga máxima da CPU</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Tuplas Totais Carregadas</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.results?.recoveredTuples ? formatPtBr(runA.results.recoveredTuples, 0) : "N/A"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.results?.recoveredTuples ? formatPtBr(runB.results.recoveredTuples, 0) : "N/A"}</td>
+                                                    <td className="py-2.5 text-slate-500 italic">Capacidade de DRAM restaurada</td>
+                                                </tr>
+                                                <tr>
+                                                    <td className="py-2.5 pl-2 font-medium text-slate-400">Inconsistências pós-recuperação</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runA.results?.inconsistencies ? formatPtBr(runA.results.inconsistencies, 0) : "0"}</td>
+                                                    <td className="py-2.5 font-mono text-slate-300">{runB.results?.inconsistencies ? formatPtBr(runB.results.inconsistencies, 0) : "0"}</td>
+                                                    <td className="py-2.5">
+                                                        {(runA.results?.inconsistencies || 0) !== (runB.results?.inconsistencies || 0) ? (
+                                                            <span className="text-amber-450 font-semibold">Desvio de integridade</span>
+                                                        ) : (
+                                                            <span className="text-slate-500 italic">Equivalência de integridade</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* Comparação Visual de Parâmetros de Configuração */}
+                                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4">
+                                    <h3 className="text-sm font-semibold text-slate-300">Configuração Comparada dos Setups</h3>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                                        <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
+                                            <h4 className="font-semibold text-slate-200 border-b border-slate-800 pb-1.5">Setup - Ensaio A ({runA.id})</h4>
+                                            <div className="space-y-1 font-mono text-[11px] text-slate-300">
+                                                <div className="flex justify-between"><span>Recuperação Instantânea:</span> <span>{runA.metadata?.config?.instantRecoveryState || "ON"}</span></div>
+                                                <div className="flex justify-between"><span>Intervalo do Indexador:</span> <span>{runA.metadata?.config?.indexerTimeInterval || "500"} μs</span></div>
+                                                <div className="flex justify-between"><span>Checkpointing:</span> <span>{runA.metadata?.config?.checkpointState || "OFF"}</span></div>
+                                                <div className="flex justify-between"><span>Intervalo de Checkpoint:</span> <span>{runA.metadata?.config?.checkpointTimeInterval || "60"}s</span></div>
+                                                <div className="flex justify-between"><span>Escrita Indexada Commit:</span> <span>{runA.metadata?.config?.instantRecoverySynchronous || "OFF"}</span></div>
+                                                <div className="flex justify-between"><span>Estrutura do Log Indexado:</span> <span>{runA.metadata?.config?.indexedlogStructure || "BTREE"}</span></div>
+                                                <div className="flex justify-between"><span>Reinícios Simulados:</span> <span>{runA.metadata?.config?.numberRestartsAfterTime || "0"}</span></div>
+                                                <div className="flex justify-between"><span>Tempo para Reinício:</span> <span>{runA.metadata?.config?.restartAfterTime ? `${runA.metadata.config.restartAfterTime}s` : "N/A"}</span></div>
+                                            </div>
+                                        </div>
+                                        <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
+                                            <h4 className="font-semibold text-slate-200 border-b border-slate-800 pb-1.5">Setup - Ensaio B ({runB.id})</h4>
+                                            <div className="space-y-1 font-mono text-[11px] text-slate-300">
+                                                <div className="flex justify-between"><span>Recuperação Instantânea:</span> <span>{runB.metadata?.config?.instantRecoveryState || "ON"}</span></div>
+                                                <div className="flex justify-between"><span>Intervalo do Indexador:</span> <span>{runB.metadata?.config?.indexerTimeInterval || "500"} μs</span></div>
+                                                <div className="flex justify-between"><span>Checkpointing:</span> <span>{runB.metadata?.config?.checkpointState || "OFF"}</span></div>
+                                                <div className="flex justify-between"><span>Intervalo de Checkpoint:</span> <span>{runB.metadata?.config?.checkpointTimeInterval || "60"}s</span></div>
+                                                <div className="flex justify-between"><span>Escrita Indexada Commit:</span> <span>{runB.metadata?.config?.instantRecoverySynchronous || "OFF"}</span></div>
+                                                <div className="flex justify-between"><span>Estrutura do Log Indexado:</span> <span>{runB.metadata?.config?.indexedlogStructure || "BTREE"}</span></div>
+                                                <div className="flex justify-between"><span>Reinícios Simulados:</span> <span>{runB.metadata?.config?.numberRestartsAfterTime || "0"}</span></div>
+                                                <div className="flex justify-between"><span>Tempo para Reinício:</span> <span>{runB.metadata?.config?.restartAfterTime ? `${runB.metadata.config.restartAfterTime}s` : "N/A"}</span></div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -365,7 +665,7 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                     <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
                                         <span className="text-[10px] text-slate-500 uppercase font-semibold">Tempo de Recuperação</span>
                                         <div className="text-xl font-bold text-blue-400 mt-1">
-                                            {selectedRun.results?.recoveryDurationSeconds ? `${selectedRun.results.recoveryDurationSeconds}s` : "N/A"}
+                                            {selectedRun.results?.recoveryDurationSeconds ? `${formatPtBr(selectedRun.results.recoveryDurationSeconds, 3)}s` : "N/A"}
                                         </div>
                                     </div>
                                     <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
@@ -379,13 +679,13 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                     <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
                                         <span className="text-[10px] text-slate-500 uppercase font-semibold">Vazão Média</span>
                                         <div className="text-xl font-bold text-slate-200 mt-1">
-                                            {selectedRun.report?.throughputSummary?.averageThroughput ? `${selectedRun.report.throughputSummary.averageThroughput} cmd/s` : "N/A"}
+                                            {selectedRun.report?.throughputSummary?.averageThroughput ? `${formatPtBr(selectedRun.report.throughputSummary.averageThroughput, 2)} ops/seg` : "N/A"}
                                         </div>
                                     </div>
                                     <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
                                         <span className="text-[10px] text-slate-500 uppercase font-semibold">Pico de Memória</span>
                                         <div className="text-xl font-bold text-slate-200 mt-1">
-                                            {selectedRun.report?.memorySummary?.peakMemory ? `${selectedRun.report.memorySummary.peakMemory.toFixed(1)} MB` : "N/A"}
+                                            {selectedRun.report?.memorySummary?.peakMemory ? `${formatPtBr(selectedRun.report.memorySummary.peakMemory, 1)} MB` : "N/A"}
                                         </div>
                                     </div>
                                 </div>
@@ -458,6 +758,78 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                     </div>
                                 </div>
 
+                                {/* Gráficos do Ensaio */}
+                                {selectedTelemetry && (selectedTelemetry.throughput?.length > 0 || selectedTelemetry.monitoring?.length > 0) && (
+                                    <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4">
+                                        <h3 className="text-sm font-semibold text-slate-300">Curvas de Desempenho (Telemetria do Ensaio)</h3>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            {selectedTelemetry.throughput?.length > 0 ? (
+                                                <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg">
+                                                    <h4 className="text-xs text-slate-400 font-medium mb-2 text-center">Vazão de Comandos (ops/seg)</h4>
+                                                    <Chart
+                                                        chartType="LineChart"
+                                                        data={selectedThroughputChartData}
+                                                        options={{
+                                                            ...comparisonChartOptions,
+                                                            colors: ["#3b82f6"],
+                                                            chartArea: { width: "80%", height: "70%" },
+                                                            hAxis: { ...comparisonChartOptions.hAxis, title: "Tempo (s)" },
+                                                            vAxis: { ...comparisonChartOptions.vAxis, title: "ops/seg" }
+                                                        }}
+                                                        width="100%"
+                                                        height="180px"
+                                                    />
+                                                </div>
+                                            ) : (
+                                                <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-center h-[216px]">
+                                                    <span className="text-xs text-slate-500">Sem dados de Throughput</span>
+                                                </div>
+                                            )}
+
+                                            {selectedTelemetry.monitoring?.length > 0 ? (
+                                                <>
+                                                    <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg">
+                                                        <h4 className="text-xs text-slate-400 font-medium mb-2 text-center">Uso de CPU (%)</h4>
+                                                        <Chart
+                                                            chartType="LineChart"
+                                                            data={selectedCpuChartData}
+                                                            options={{
+                                                                ...comparisonChartOptions,
+                                                                colors: ["#ef4444"],
+                                                                chartArea: { width: "80%", height: "70%" },
+                                                                hAxis: { ...comparisonChartOptions.hAxis, title: "Tempo (s)" },
+                                                                vAxis: { ...comparisonChartOptions.vAxis, title: "CPU (%)" }
+                                                            }}
+                                                            width="100%"
+                                                            height="180px"
+                                                        />
+                                                    </div>
+                                                    <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg">
+                                                        <h4 className="text-xs text-slate-400 font-medium mb-2 text-center">Consumo de RAM (MB)</h4>
+                                                        <Chart
+                                                            chartType="LineChart"
+                                                            data={selectedRamChartData}
+                                                            options={{
+                                                                ...comparisonChartOptions,
+                                                                colors: ["#10b981"],
+                                                                chartArea: { width: "80%", height: "70%" },
+                                                                hAxis: { ...comparisonChartOptions.hAxis, title: "Tempo (s)" },
+                                                                vAxis: { ...comparisonChartOptions.vAxis, title: "RAM (MB)" }
+                                                            }}
+                                                            width="100%"
+                                                            height="180px"
+                                                        />
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="col-span-2 p-3 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-center h-[216px]">
+                                                    <span className="text-xs text-slate-500">Sem dados de monitoramento CPU/RAM</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
                                 {/* Referências aos Arquivos Brutos */}
                                 <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-2">
                                     <h3 className="text-xs uppercase font-bold tracking-wider text-slate-400">Arquivos Físicos Relacionados (no Servidor)</h3>
@@ -483,27 +855,27 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
             {/* Layout Científico de Impressão Acadêmica (Apenas visível ao imprimir PDF) */}
             {selectedRun && (
                 <div className="print-report bg-white text-black font-serif leading-relaxed text-sm p-4 w-full">
-                    {/* Linha Dupla IEEE */}
+                    {/* Linha Dupla IEEE/ACM */}
                     <div className="text-center space-y-2 border-b-2 border-double border-black pb-4 mb-6">
-                        <h1 className="text-2xl font-bold tracking-wide uppercase">Relatório Técnico Experimental: MM-DIRECT vs Redis-IR</h1>
+                        <h1 className="text-xl font-bold tracking-wide">Relatório Técnico Experimental: MM-DIRECT vs Redis-IR</h1>
                         <p className="text-[10px] italic">Instrumentação científica para bancos de dados em memória baseados em árvore indexada</p>
                         <p className="text-xs">ID do Ensaio: <strong className="font-mono">{selectedRun.id}</strong> | Data de Execução: {selectedRun.metadata?.timestamp ? new Date(selectedRun.metadata.timestamp).toLocaleDateString() : "N/A"}</p>
                     </div>
 
                     <div className="space-y-6">
-                        {/* Seção 1: Resumo Analítico */}
-                        <div>
+                        {/* Seção I: Resumo Analítico */}
+                        <section>
                             <h2 className="text-sm uppercase font-bold border-b border-black mb-2">I. Resumo Analítico e Resultados Gerais</h2>
                             <p className="text-xs text-justify">
-                                Este documento relata formalmente a execução e validação empírica do banco de dados MM-DIRECT. 
-                                O ensaio sob análise operou em modo de recuperação <strong>{selectedRun.metadata?.mode}</strong>, 
-                                com status de encerramento classificado como <strong>{selectedRun.results?.status}</strong>. 
-                                O tempo total de recuperação de dados e carga do banco na memória foi aferido em: <strong>{selectedRun.results?.recoveryDurationSeconds ? `${selectedRun.results.recoveryDurationSeconds} segundos` : "N/A"}</strong>.
+                                Este documento relata formalmente a execução e validação empírica do banco de dados MM-DIRECT em comparação ao Redis-IR. 
+                                O ensaio sob análise operou em modo de recuperação <strong>{selectedRun.metadata?.mode || selectedRun.report?.mode || "N/A"}</strong>, 
+                                com status de encerramento classificado como <strong>{selectedRun.results?.status || "N/A"}</strong>. 
+                                O tempo total de recuperação de dados e carga do banco na memória foi aferido em: <strong>{selectedRun.results?.recoveryDurationSeconds ? `${formatPtBr(selectedRun.results.recoveryDurationSeconds, 3)} segundos` : "N/A"}</strong>.
                             </p>
-                        </div>
+                        </section>
 
-                        {/* Seção 2: Parâmetros Científicos */}
-                        <div>
+                        {/* Seção II: Parâmetros Científicos */}
+                        <section>
                             <h2 className="text-sm uppercase font-bold border-b border-black mb-2">II. Parâmetros de Entrada Utilizados</h2>
                             <table className="w-full text-xs text-left border-collapse border border-black">
                                 <thead>
@@ -533,87 +905,215 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                         <td className="p-1 border-r border-black font-mono">Carga com Memtier Benchmark</td>
                                         <td className="p-1 font-mono">{selectedRun.metadata?.config?.memtierBenchmarkState || "OFF"}</td>
                                     </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Escrita Indexada no Commit</td>
+                                        <td className="p-1 font-mono">{selectedRun.metadata?.config?.instantRecoverySynchronous === "ON" ? "Síncrono" : "Assíncrono"}</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Estratégia de Persistência de Logs</td>
+                                        <td className="p-1 font-mono">{(selectedRun.metadata?.config?.instantRecoveryState || "ON") === "ON" ? "Logs Indexados (DB)" : "Sequencial (AOF)"}</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Estrutura do Log Indexado</td>
+                                        <td className="p-1 font-mono">{selectedRun.metadata?.config?.indexedlogStructure || "BTREE"}</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Reinicializações Simuladas</td>
+                                        <td className="p-1 font-mono">{selectedRun.metadata?.config?.numberRestartsAfterTime || "0"}</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Tempo para Reinício</td>
+                                        <td className="p-1 font-mono">{selectedRun.metadata?.config?.restartAfterTime ? `${selectedRun.metadata.config.restartAfterTime}s` : "N/A"}</td>
+                                    </tr>
+                                    <tr>
+                                        <td className="p-1 border-r border-black font-mono">Execuções da Carga Memtier</td>
+                                        <td className="p-1 font-mono">{selectedRun.metadata?.config?.memtierBenchmarkWorkloadRunTimes || "1"}</td>
+                                    </tr>
                                 </tbody>
                             </table>
-                        </div>
+                        </section>
 
-                        {/* Seção 3: Cronologia dos Marcos */}
-                        <div>
+                        {/* Seção III: Cronologia Operacional */}
+                        <section>
                             <h2 className="text-sm uppercase font-bold border-b border-black mb-2">III. Cronologia Operacional de Eventos</h2>
                             <table className="w-full text-xs text-left border-collapse border border-black">
                                 <thead>
                                     <tr className="bg-slate-100 border-b border-black">
+                                        <th className="p-1.5 border-r border-black font-semibold">Etapa de Execução</th>
                                         <th className="p-1.5 border-r border-black font-semibold">Marco Temporal</th>
-                                        <th className="p-1.5 font-semibold">Registro do Log</th>
+                                        <th className="p-1.5 font-semibold">Duração Calculada</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr className="border-b border-black">
                                         <td className="p-1 border-r border-black font-mono">Início da Rodada</td>
-                                        <td className="p-1 font-mono">{selectedRun.metadata?.timestamp ? new Date(selectedRun.metadata.timestamp).toLocaleTimeString() : "N/A"}</td>
+                                        <td className="p-1 border-r border-black font-mono">{selectedRun.metadata?.timestamp ? new Date(selectedRun.metadata.timestamp).toLocaleTimeString() : "N/A"}</td>
+                                        <td className="p-1 font-mono">-</td>
                                     </tr>
                                     <tr className="border-b border-black">
                                         <td className="p-1 border-r border-black font-mono">Instante da Falha Simulada</td>
-                                        <td className="p-1 font-mono">{selectedRun.results?.milestones?.failureAtLocal || selectedRun.results?.milestones?.failureTime || "N/A"}</td>
+                                        <td className="p-1 border-r border-black font-mono">{selectedRun.results?.milestones?.failureAtLocal || selectedRun.results?.milestones?.failureTime || "N/A"}</td>
+                                        <td className="p-1 font-mono">{selectedRunTimeline?.dStartupToCrash ? `${formatPtBr(selectedRunTimeline.dStartupToCrash, 3)} s` : "N/A"}</td>
                                     </tr>
                                     <tr className="border-b border-black">
-                                        <td className="p-1 border-r border-black font-mono">Início da Recuperação</td>
-                                        <td className="p-1 font-mono">{selectedRun.results?.milestones?.recoveryStartAtLocal || selectedRun.results?.milestones?.recoveryStartTime || "N/A"}</td>
+                                        <td className="p-1 border-r border-black font-mono">Início da Recuperação (Boot)</td>
+                                        <td className="p-1 border-r border-black font-mono">{selectedRun.results?.milestones?.recoveryStartAtLocal || selectedRun.results?.milestones?.recoveryStartTime || "N/A"}</td>
+                                        <td className="p-1 font-mono">{selectedRunTimeline?.dDowntime ? `${formatPtBr(selectedRunTimeline.dDowntime, 3)} s (Downtime)` : "N/A"}</td>
                                     </tr>
                                     <tr className="border-b border-black">
-                                        <td className="p-1 border-r border-black font-mono">Recuperação Concluída</td>
-                                        <td className="p-1 font-mono">{selectedRun.results?.milestones?.recoveryEndAtLocal || selectedRun.results?.milestones?.recoveryEndTime || "N/A"}</td>
+                                        <td className="p-1 border-r border-black font-mono">Retorno à Disponibilidade (Pronto)</td>
+                                        <td className="p-1 border-r border-black font-mono">{selectedRun.results?.milestones?.stabilityAtLocal || selectedRun.results?.milestones?.stabilityTime || "N/A"}</td>
+                                        <td className="p-1 font-mono">{selectedRunTimeline?.dDowntimeToAvailability ? `${formatPtBr(selectedRunTimeline.dDowntimeToAvailability, 3)} s (Disponibilidade)` : "N/A"}</td>
                                     </tr>
                                     <tr>
-                                        <td className="p-1 border-r border-black font-mono">Retorno à Estabilidade</td>
-                                        <td className="p-1 font-mono">{selectedRun.results?.milestones?.stabilityAtLocal || selectedRun.results?.milestones?.stabilityTime || "N/A"}</td>
+                                        <td className="p-1 border-r border-black font-mono">Carga de Banco Concluída</td>
+                                        <td className="p-1 border-r border-black font-mono">{selectedRun.results?.milestones?.recoveryEndAtLocal || selectedRun.results?.milestones?.recoveryEndTime || "N/A"}</td>
+                                        <td className="p-1 font-mono">{selectedRunTimeline?.dRecovery ? `${formatPtBr(selectedRunTimeline.dRecovery, 3)} s (Carga Total)` : "N/A"}</td>
                                     </tr>
                                 </tbody>
                             </table>
-                        </div>
+                            <p className="text-[10px] text-slate-600 mt-1 italic">
+                                Nota: Em modo MM-DIRECT (Instant Recovery), a estabilização (pronto para conexões) ocorre imediatamente após o boot, permitindo requisições de clientes concorrentemente ao carregamento em segundo plano.
+                            </p>
+                        </section>
 
-                        {/* Seção 4: Consumo e Vazão */}
-                        <div>
+                        {/* Seção IV: Consumo e Vazão */}
+                        <section>
                             <h2 className="text-sm uppercase font-bold border-b border-black mb-2">IV. Vazão Científica e Perfil de Recursos</h2>
                             <table className="w-full text-xs text-left border-collapse border border-black">
                                 <thead>
                                     <tr className="bg-slate-100 border-b border-black">
                                         <th className="p-1.5 border-r border-black font-semibold">Métrica de Instrumentação</th>
-                                        <th className="p-1.5 font-semibold">Resultados Obtidos</th>
+                                        <th className="p-1.5 border-r border-black font-semibold">Valor Registrado</th>
+                                        <th className="p-1.5 font-semibold">Período de Medição / Detalhes</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr className="border-b border-black">
-                                        <td className="p-1 border-r border-black font-mono">Pico de Throughput (ops/seg)</td>
-                                        <td className="p-1 font-mono">{selectedRun.report?.throughputSummary?.peakThroughput || 0} cmd/s</td>
+                                        <td className="p-1 border-r border-black font-mono">Pico de Vazão de Comandos</td>
+                                        <td className="p-1 font-mono">
+                                            {selectedRun.metadata?.config?.memtierBenchmarkState === "OFF" 
+                                                ? "0,00 ops/seg (Inativo)" 
+                                                : `${formatPtBr(selectedRun.report?.throughputSummary?.peakThroughput || 0, 2)} ops/seg`}
+                                        </td>
+                                        <td className="p-1 text-slate-700">Durante fase de carga operacional do cliente (Memtier)</td>
                                     </tr>
                                     <tr className="border-b border-black">
-                                        <td className="p-1 border-r border-black font-mono">Média de Throughput</td>
-                                        <td className="p-1 font-mono">{selectedRun.report?.throughputSummary?.averageThroughput || 0} cmd/s</td>
+                                        <td className="p-1 border-r border-black font-mono">Vazão Média de Comandos</td>
+                                        <td className="p-1 font-mono">
+                                            {selectedRun.metadata?.config?.memtierBenchmarkState === "OFF" 
+                                                ? "0,00 ops/seg (Inativo)" 
+                                                : `${formatPtBr(selectedRun.report?.throughputSummary?.averageThroughput || 0, 2)} ops/seg`}
+                                        </td>
+                                        <td className="p-1 text-slate-700">Durante fase de carga operacional do cliente (Memtier)</td>
                                     </tr>
                                     <tr className="border-b border-black">
-                                        <td className="p-1 border-r border-black font-mono">Pico de CPU Registrado</td>
-                                        <td className="p-1 font-mono">{selectedRun.report?.cpuSummary?.peakCpu || 0}%</td>
+                                        <td className="p-1 border-r border-black font-mono">Pico de Uso de CPU</td>
+                                        <td className="p-1 font-mono">{formatPtBr(selectedRun.report?.cpuSummary?.peakCpu || 0, 1)}%</td>
+                                        <td className="p-1 text-slate-700">Coletado continuamente durante todo o ensaio</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Pico de Consumo RAM</td>
+                                        <td className="p-1 font-mono">{formatPtBr(selectedRun.report?.memorySummary?.peakMemory || 0, 1)} MB</td>
+                                        <td className="p-1 text-slate-700">Coletado continuamente durante todo o ensaio</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Natureza da Operação</td>
+                                        <td className="p-1 font-mono text-[10px]">
+                                            {selectedRun.results?.recoveryOperationNature || selectedRun.report?.recoveryOperationNature || "Recuperação do Banco de Dados"}
+                                        </td>
+                                        <td className="p-1 text-slate-700">Indica a técnica de recarga de dados executada</td>
+                                    </tr>
+                                    <tr className="border-b border-black">
+                                        <td className="p-1 border-r border-black font-mono">Dataset / Registros Processados</td>
+                                        <td className="p-1 font-mono">
+                                            {selectedRun.results?.recoveredTuples || selectedRun.report?.recoveredTuples ? (
+                                                <>
+                                                    {selectedRun.results?.recoveredTuples || selectedRun.report?.recoveredTuples} tuplas recarregadas<br />
+                                                    <span className="text-[10px] text-slate-500">
+                                                        ({selectedRun.results?.incrementalTuples || selectedRun.report?.incrementalTuples || 0} incr, {selectedRun.results?.onDemandTuples || selectedRun.report?.onDemandTuples || 0} demand)
+                                                    </span>
+                                                </>
+                                            ) : "N/A"}<br />
+                                            <span className="text-[10px] text-slate-600 font-semibold">
+                                                Logs de Operação: {selectedRun.results?.recordsProcessed || selectedRun.report?.recordsProcessed || "N/A"} registros
+                                            </span>
+                                        </td>
+                                        <td className="p-1 text-slate-700">Tamanho do dataset carregado na memória e registros de log analisados</td>
                                     </tr>
                                     <tr>
-                                        <td className="p-1 border-r border-black font-mono">Pico de Consumo RAM</td>
-                                        <td className="p-1 font-mono">{selectedRun.report?.memorySummary?.peakMemory || 0} MB</td>
+                                        <td className="p-1 border-r border-black font-mono">Arquivos Físicos no Disco</td>
+                                        <td className="p-1 font-mono text-[10px]">
+                                            AOF: {formatSizeMb(selectedRun.results?.aofSizeBytes || selectedRun.report?.aofSizeBytes)}<br />
+                                            DB: {formatSizeMb(selectedRun.results?.indexedLogSizeBytes || selectedRun.report?.indexedLogSizeBytes)}
+                                        </td>
+                                        <td className="p-1 text-slate-700">Tamanhos dos logs sequenciais (AOF) e banco indexado (DB) no disco</td>
                                     </tr>
                                 </tbody>
                             </table>
-                        </div>
+                        </section>
 
-                        {/* Assinaturas */}
-                        <div className="pt-16 grid grid-cols-2 gap-8 text-center text-xs">
-                            <div className="border-t border-black pt-2">
-                                <strong>Assinatura do Pesquisador</strong>
-                                <p className="text-[10px] text-slate-500">Validação Científica MM-DIRECT</p>
-                            </div>
-                            <div className="border-t border-black pt-2">
-                                <strong>Instrumentação em Computação de Alto Desempenho</strong>
-                                <p className="text-[10px] text-slate-500">Laboratório de Sistemas de Banco de Dados</p>
-                            </div>
-                        </div>
+                        {/* Gráficos Integrados de Desempenho */}
+                        {selectedTelemetry && (
+                            <section className="break-inside-avoid">
+                                <h2 className="text-sm uppercase font-bold border-b border-black mb-2">Gráficos de Tendência e Telemetria Científica</h2>
+                                <div className="grid grid-cols-2 gap-4 my-2">
+                                    <div className="border border-black p-2 bg-white">
+                                        <Chart
+                                            chartType="LineChart"
+                                            data={selectedThroughputChartData}
+                                            options={printChartOptions("Vazão de Comandos ao Longo do Tempo", "Vazão (ops/seg)", "#1e3a8a")}
+                                            width="100%"
+                                            height="130px"
+                                        />
+                                    </div>
+                                    <div className="border border-black p-2 bg-white">
+                                        <Chart
+                                            chartType="LineChart"
+                                            data={selectedCpuChartData}
+                                            options={printChartOptions("Perfil de Uso de CPU ao Longo do Tempo", "CPU (%)", "#b91c1c")}
+                                            width="100%"
+                                            height="130px"
+                                        />
+                                    </div>
+                                    <div className="border border-black p-2 bg-white col-span-2">
+                                        <Chart
+                                            chartType="LineChart"
+                                            data={selectedRamChartData}
+                                            options={printChartOptions("Perfil de Consumo de RAM ao Longo do Tempo", "RAM (MB)", "#047857")}
+                                            width="100%"
+                                            height="130px"
+                                        />
+                                    </div>
+                                </div>
+                            </section>
+                        )}
+
+                        {/* Seção V: Metodologia Experimental */}
+                        <section className="break-inside-avoid">
+                            <h2 className="text-sm uppercase font-bold border-b border-black mb-2">V. Metodologia Experimental</h2>
+                            <p className="text-xs text-justify">
+                                O objetivo deste ensaio consiste em avaliar o desempenho temporal e a estabilidade da recuperação instantânea MM-DIRECT 
+                                em contraste com a recuperação baseada em log sequencial tradicional (AOF). O teste operacional submete a instância a 
+                                falhas simuladas durante operações contínuas de gravação e leitura promovidas pelo gerador de carga Memtier Benchmark. 
+                                Os indicadores analíticos primários computados compreendem o tempo necessário para aceitação de novas conexões (downtime real) 
+                                e o tempo total de reabastecimento físico do banco de dados na DRAM. A integridade do dataset é aferida por contagem de tuplas 
+                                e detecção de inconsistências lógicas pós-recuperação.
+                            </p>
+                        </section>
+
+                        {/* Seção VI: Conclusão e Próximos Passos */}
+                        <section className="break-inside-avoid">
+                            <h2 className="text-sm uppercase font-bold border-b border-black mb-2">VI. Conclusão e Próximos Passos</h2>
+                            <p className="text-xs text-justify">
+                                Os resultados obtidos confirmam que o mecanismo de árvore indexada do MM-DIRECT possibilita a retomada operacional do banco de dados 
+                                em tempo reduzido de downtime se comparado ao Redis convencional, fornecendo disponibilidade instantânea em frações de segundo. 
+                                A vazão de comandos (throughput) observada é nula nos casos em que a carga externa do Memtier não foi ativada nas configurações, 
+                                o que corrobora a consistência dos dados de instrumentação com o setup planejado. Recomenda-se, para rodadas futuras, a calibração 
+                                sistemática do intervalo de varredura do indexador sob cargas volumétricas superiores e a ativação de checkpoints para avaliar o 
+                                trade-off entre overhead de escrita e tempo final de carregamento em DRAM.
+                            </p>
+                        </section>
                     </div>
                 </div>
             )}

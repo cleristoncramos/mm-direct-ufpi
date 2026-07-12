@@ -276,12 +276,19 @@ const finalizeRunResults = () => {
     console.error(`Erro ao copiar system_monitoring.csv para o ensaio ${currentRunId}:`, e.message);
   }
 
-  // 2. Analisa logs para identificar marcos de falha/recuperação
+  // 2. Analisa logs para identificar marcos de falha/recuperação e metadados científicos
   let failureTimes = { utc: null, local: null };
   let recoveryStartTimes = { utc: null, local: null };
   let recoveryEndTimes = { utc: null, local: null };
   let stabilityTimes = { utc: null, local: null };
   let recoveryDuration = null;
+
+  let recoveredTuples = null;
+  let incrementalTuples = null;
+  let onDemandTuples = null;
+  let recordsProcessed = null;
+  let inconsistencies = null;
+  let recoveryOperationNature = null;
 
   const fullLogs = currentRunLogs.join("\n");
   const logLines = fullLogs.split("\n");
@@ -302,18 +309,86 @@ const finalizeRunResults = () => {
 
     if (text.includes("loading the database from")) {
       recoveryStartTimes = times;
+      if (text.includes("indexed log")) {
+        recoveryOperationNature = "Recuperação via MM-DIRECT (B-Tree)";
+      } else if (text.includes("aof") || text.includes("append only file") || text.includes("sequential log")) {
+        recoveryOperationNature = "Recuperação Tradicional (AOF)";
+      }
     } else if (text.includes("user requested shutdown") || text.includes("redis is now ready to exit")) {
       failureTimes = times;
-    } else if (text.includes("db loaded from indexed log") || text.includes("db loaded from aof")) {
+    } else if (text.includes("db loaded from indexed log") || text.includes("db loaded from aof") || text.includes("db loaded from append only file")) {
       recoveryEndTimes = times;
       const match = log.match(/loaded from (Indexed Log|AOF):\s*([\d\.]+)\s*seconds/i);
       if (match) {
         recoveryDuration = parseFloat(match[2]);
+      } else {
+        const matchDisk = log.match(/loaded from disk:\s*([\d\.]+)\s*seconds/i);
+        if (matchDisk) recoveryDuration = parseFloat(matchDisk[1]);
+        const matchAof = log.match(/loaded from append only file:\s*([\d\.]+)\s*seconds/i);
+        if (matchAof) recoveryDuration = parseFloat(matchAof[1]);
+      }
+
+      if (text.includes("indexed log")) {
+        recoveryOperationNature = "Recuperação via MM-DIRECT (B-Tree)";
+      } else {
+        recoveryOperationNature = "Recuperação Tradicional (AOF)";
+      }
+
+      const tuplesMatch = log.match(/number of tuples loaded into memory:\s*(\d+)/i);
+      if (tuplesMatch) {
+        recoveredTuples = parseInt(tuplesMatch[1]);
+      }
+      const incrMatch = log.match(/inclementally\s*=\s*(\d+)/i);
+      if (incrMatch) {
+        incrementalTuples = parseInt(incrMatch[1]);
+      }
+      const onDemandMatch = log.match(/on-demand\s*=\s*(\d+)/i);
+      if (onDemandMatch) {
+        onDemandTuples = parseInt(onDemandMatch[1]);
+      }
+      const recordsMatch = log.match(/number of records processed:\s*(\d+)/i);
+      if (recordsMatch) {
+        recordsProcessed = parseInt(recordsMatch[1]);
+      } else {
+        const aofRecordsMatch = log.match(/records processed from sequential log\s*=\s*(\d+)/i);
+        if (aofRecordsMatch) {
+          recordsProcessed = parseInt(aofRecordsMatch[1]);
+        }
+      }
+      const inconsistenciesMatch = log.match(/inconsistenes:\s*(\d+)/i);
+      if (inconsistenciesMatch) {
+        inconsistencies = parseInt(inconsistenciesMatch[1]);
       }
     } else if (text.includes("ready to accept connections")) {
       stabilityTimes = times;
     }
   });
+
+  if (!recoveryOperationNature) {
+    recoveryOperationNature = (activeConfig.instantRecoveryState || "ON").toUpperCase() === "ON" ? "Recuperação via MM-DIRECT (B-Tree)" : "Recuperação Tradicional (AOF)";
+  }
+
+  // Medição de tamanhos físicos dos arquivos de banco
+  let aofSizeBytes = null;
+  let indexedLogSizeBytes = null;
+  const aofPath = path.join(rootPath, "src", activeConfig.aofFilename || "logs/sequentialLog.aof");
+  const indexedLogPath = path.join(rootPath, "src", activeConfig.indexedlogFilename || "logs/indexedLog.db");
+
+  try {
+    if (fs.existsSync(aofPath)) {
+      aofSizeBytes = fs.statSync(aofPath).size;
+    }
+  } catch (err) {
+    console.error("Erro ao ler tamanho do AOF:", err.message);
+  }
+
+  try {
+    if (fs.existsSync(indexedLogPath)) {
+      indexedLogSizeBytes = fs.statSync(indexedLogPath).size;
+    }
+  } catch (err) {
+    console.error("Erro ao ler tamanho do Indexed Log DB:", err.message);
+  }
 
   // Calcula duração baseada exclusivamente nos marcos UTC
   if (recoveryStartTimes.utc && recoveryEndTimes.utc) {
@@ -340,7 +415,15 @@ const finalizeRunResults = () => {
       stabilityAtLocal: stabilityTimes.local
     },
     recoveryDurationSeconds: recoveryDuration,
-    status: stabilityTimes.utc ? "Estável" : "Interrompido"
+    status: stabilityTimes.utc ? "Estável" : "Interrompido",
+    recoveredTuples,
+    incrementalTuples,
+    onDemandTuples,
+    recordsProcessed,
+    inconsistencies,
+    recoveryOperationNature,
+    aofSizeBytes,
+    indexedLogSizeBytes
   };
 
   try {
@@ -368,7 +451,7 @@ const finalizeRunResults = () => {
         if (row.length < 5) return;
         lineCount++;
         if (lineCount === 2) {
-          dbStartup = parseInt(row[1]);
+          dbStartup = parseInt(row[2]) || parseInt(row[1]);
         } else if (lineCount > 2) {
           if (row[0] !== '0' && !isNaN(parseInt(row[2]))) {
             totalCommands++;
@@ -475,7 +558,15 @@ const finalizeRunResults = () => {
     memorySummary: {
       peakMemory,
       averageMemory
-    }
+    },
+    recoveredTuples,
+    incrementalTuples,
+    onDemandTuples,
+    recordsProcessed,
+    inconsistencies,
+    recoveryOperationNature,
+    aofSizeBytes,
+    indexedLogSizeBytes
   };
 
   try {
@@ -581,7 +672,7 @@ app.get('/api/runs/:runId/telemetry', (req, res) => {
         if (row.length < 5) return;
         totalLines++;
         if (totalLines === 2) {
-          dbStartupTime = parseInt(row[1]);
+          dbStartupTime = parseInt(row[2]) || parseInt(row[1]);
         } else if (totalLines > 2) {
           if (row[0] !== '0' && !isNaN(parseInt(row[2]))) {
             const finishTime = parseInt(row[2]);

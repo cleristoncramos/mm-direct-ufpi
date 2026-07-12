@@ -138,7 +138,7 @@ const App = () => {
                 )}
 
                 {generateArquive && (
-                    <div className="print:hidden">
+                    <div className="flex-1 flex flex-col">
                         <ChartBoard
                             cpuChart={generateArquiveMonitoring}
                             transferChart={generateArquive}
