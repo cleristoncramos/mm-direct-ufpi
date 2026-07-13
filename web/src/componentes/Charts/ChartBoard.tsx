@@ -6,6 +6,15 @@ import MemoryChart from "./MemoryChart";
 import { ScatterChart } from "./ScatterChart";
 import TerminalController from "../TerminalController";
 import ReloadButton from "../ReloadButton";
+import { Line } from "react-chartjs-2";
+import { Chart as ChartJS, registerables, ChartOptions } from "chart.js";
+import annotationPlugin from "chartjs-plugin-annotation";
+
+try {
+    ChartJS.register(...registerables, annotationPlugin);
+} catch (e) {
+    console.error("Error registering ChartJS in ChartBoard", e);
+}
 
 interface ChartBoardProps {
     cpuChart: boolean;
@@ -219,13 +228,159 @@ const ChartBoard = ({
     }, [dataMemory]);
 
     const printThroughputChartData = useMemo(() => {
-        const header = ["Tempo (s)", "Throughput (ops/s)"];
-        if (dataTransfer.length === 0) return [header, [0, 0]];
-        return [
-            header,
-            ...dataTransfer
-        ];
-    }, [dataTransfer]);
+        const failT = failureTime ?? recoveryStartTime ?? Infinity;
+        const recEnd = recoveryEndTime ?? Infinity;
+
+        return {
+            datasets: [
+                {
+                    label: "Throughput",
+                    data: dataTransfer.map((item) => ({ x: item[0], y: item[1] })),
+                    borderColor: "#3b82f6", // Default fallback color
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    tension: 0.15,
+                    fill: false,
+                    segment: {
+                        borderColor: (ctx: any) => {
+                            if (ctx.p1) {
+                                const xVal = ctx.p1.parsed.x;
+                                if (xVal >= failT && xVal <= recEnd) {
+                                    return "#f59e0b"; // Orange during recovery
+                                } else if (xVal > recEnd) {
+                                    return "#10b981"; // Green post-recovery
+                                }
+                            }
+                            return "#3b82f6"; // Blue during normal operation
+                        }
+                    }
+                }
+            ]
+        };
+    }, [dataTransfer, failureTime, recoveryStartTime, recoveryEndTime]);
+
+    const printThroughputOptions = useMemo<ChartOptions<"line">>(() => {
+        const recZoneStart = recoveryStartTime ?? failureTime;
+        const recZoneEnd = recoveryEndTime;
+
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: "linear" as const,
+                    grid: {
+                        color: "#e2e8f0"
+                    },
+                    ticks: {
+                        color: "black",
+                        font: {
+                            family: "Times New Roman",
+                            size: 7
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: "Tempo (s)",
+                        color: "black",
+                        font: {
+                            family: "Times New Roman",
+                            size: 8,
+                            style: "italic"
+                        }
+                    }
+                },
+                y: {
+                    grid: {
+                        color: "#e2e8f0"
+                    },
+                    ticks: {
+                        color: "black",
+                        font: {
+                            family: "Times New Roman",
+                            size: 7
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: "Vazão (ops/seg)",
+                        color: "black",
+                        font: {
+                            family: "Times New Roman",
+                            size: 8,
+                            style: "italic"
+                        }
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                title: {
+                    display: true,
+                    text: "Vazão de Comandos ao Longo do Tempo (Ativo)",
+                    color: "black",
+                    font: {
+                        family: "Times New Roman",
+                        size: 9,
+                        weight: "bold"
+                    }
+                },
+                tooltip: {
+                    enabled: true
+                },
+                annotation: {
+                    annotations: {
+                        ...(failureTime !== null ? {
+                            linhaFalha: {
+                                type: "line" as const,
+                                scaleID: "x",
+                                value: failureTime,
+                                borderColor: "#ef4444",
+                                borderWidth: 1.5,
+                                borderDash: [5, 5],
+                                label: {
+                                    content: "Falha do Sistema",
+                                    display: true,
+                                    position: "start" as const,
+                                    backgroundColor: "rgba(239, 68, 68, 0.9)",
+                                    color: "#ffffff",
+                                    padding: 3,
+                                    font: {
+                                        size: 8,
+                                        family: "Times New Roman",
+                                        weight: "bold"
+                                    }
+                                }
+                            }
+                        } : {}),
+                        ...(recZoneStart !== null && recZoneEnd !== null ? {
+                            zonaRecuperacao: {
+                                type: "box" as const,
+                                xMin: recZoneStart,
+                                xMax: recZoneEnd,
+                                backgroundColor: "rgba(245, 158, 11, 0.12)",
+                                borderColor: "transparent",
+                                label: {
+                                    content: "Recuperação",
+                                    display: true,
+                                    position: "center" as const,
+                                    color: "#d97706",
+                                    font: {
+                                        size: 9,
+                                        family: "Times New Roman",
+                                        weight: "bold"
+                                    }
+                                }
+                            }
+                        } : {})
+                    }
+                }
+            }
+        };
+    }, [failureTime, recoveryStartTime, recoveryEndTime]);
 
     // 2. Conectar e gerenciar WebSockets com reconexão automática e backoff progressivo
     useEffect(() => {
@@ -1061,14 +1216,17 @@ const ChartBoard = ({
                     <section className="break-inside-avoid">
                         <h2 className="text-sm uppercase font-bold border-b border-black mb-2">Gráficos de Tendência e Telemetria em Tempo Real</h2>
                         <div className="grid grid-cols-2 gap-4 my-2">
-                            <div className="border border-black p-2 bg-white">
-                                <Chart
-                                    chartType="LineChart"
-                                    data={printThroughputChartData}
-                                    options={printChartOptions("Vazão de Comandos ao Longo do Tempo (Ativo)", "Vazão (ops/seg)", "#1e3a8a")}
-                                    width="100%"
-                                    height="130px"
-                                />
+                            <div className="border border-black p-2 bg-white" style={{ height: "130px" }}>
+                                {dataTransfer.length > 0 ? (
+                                    <Line
+                                        data={printThroughputChartData}
+                                        options={printThroughputOptions}
+                                        width="100%"
+                                        height="100%"
+                                    />
+                                ) : (
+                                    <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
+                                )}
                             </div>
                             <div className="border border-black p-2 bg-white">
                                 <Chart
