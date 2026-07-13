@@ -119,7 +119,7 @@ export const RangeInput = ({
     isDisable,
     children,
 }: RangeInputProps) => {
-    const [inputValue, setInputValue] = useState<string | number>(RangeMin);
+    const [inputValue, setInputValue] = useState<string | number>(RangeDefault);
     return (
         <div>
             <label

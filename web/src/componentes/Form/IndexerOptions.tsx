@@ -26,7 +26,7 @@ const IndexerOptions = () => {
             >
                 indexed log filename
             </TextInput>
-            <RangeInput RangeName="indexerTimeInterval" RangeDefault={500}>
+            <RangeInput RangeName="indexerTimeInterval">
                 Time interval
             </RangeInput>
         </OptionsBoard>
