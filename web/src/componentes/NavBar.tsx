@@ -1,29 +1,49 @@
-const NavBar = () => {
+interface NavBarProps {
+    currentTab: "experiment" | "history";
+    setCurrentTab: (tab: "experiment" | "history") => void;
+}
+
+const NavBar = ({ currentTab, setCurrentTab }: NavBarProps) => {
     return (
-        <header>
-            <div className="grid grid-cols-3 md:grid-cols-2 px-5 py-4 bg-my_blue justify-center ">
-                <a
-                    href="#"
-                    className=" col-start-2 md:col-start-1 md:mx-1 text-lg md:text-xl font-semibold text-slate-100 justify-self-center md:justify-self-start"
-                >
-                    <h1>MM-DIRECT</h1>
-                </a>
-                {/* <div className="mr-2 justify-self-end">
-                    <button className="w-full">
-                        <svg
-                            xmlns="http://www.w3.org/2000/svg"
-                            viewBox="0 0 24 24"
-                            fill="currentColor"
-                            className="w-6 h-6 scale-90 md:scale-110 fill-slate-50"
-                        >
-                            <path
-                                fill-rule="evenodd"
-                                d="M9.528 1.718a.75.75 0 0 1 .162.819A8.97 8.97 0 0 0 9 6a9 9 0 0 0 9 9 8.97 8.97 0 0 0 3.463-.69.75.75 0 0 1 .981.98 10.503 10.503 0 0 1-9.694 6.46c-5.799 0-10.5-4.7-10.5-10.5 0-4.368 2.667-8.112 6.46-9.694a.75.75 0 0 1 .818.162Z"
-                                clip-rule="evenodd"
-                            />
-                        </svg>
+        <header className="bg-my_blue px-6 py-3 shadow-md border-b border-blue-800/30">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                {/* Lado Esquerdo: Título e Descrição Simplificada */}
+                <div className="flex flex-col space-y-0.5 max-w-xl text-center md:text-left">
+                    <div className="flex flex-col sm:flex-row items-center gap-2">
+                        <h1 className="text-white font-black tracking-wider text-xl">MM-DIRECT</h1>
+                        <span className="h-4 w-[1px] bg-blue-700 hidden sm:block"></span>
+                        <span className="text-blue-100 text-xs font-semibold font-sans">
+                            Painel de Controle de Validação
+                        </span>
+                    </div>
+                    <p className="text-[10px] text-blue-200/70 leading-normal hidden md:block font-sans">
+                        Plataforma de execução e instrumentação científica para o banco de dados MM-DIRECT. Configure o ensaio utilizando os parâmetros abaixo e inicie a carga para gerar a telemetria em tempo real.
+                    </p>
+                </div>
+
+                {/* Lado Direito: Abas de Navegação Proeminentes */}
+                <div className="flex items-center space-x-2.5 flex-shrink-0">
+                    <button
+                        onClick={() => setCurrentTab("experiment")}
+                        className={`px-4 py-2 text-xs font-bold rounded-lg border transition duration-200 ${
+                            currentTab === "experiment"
+                                ? "bg-white text-blue-900 border-white shadow-lg font-extrabold"
+                                : "bg-blue-900/30 text-blue-100 border-blue-700/50 hover:bg-blue-850"
+                        }`}
+                    >
+                        Novo Experimento
                     </button>
-                </div> */}
+                    <button
+                        onClick={() => setCurrentTab("history")}
+                        className={`px-4 py-2 text-xs font-bold rounded-lg border transition duration-200 ${
+                            currentTab === "history"
+                                ? "bg-white text-blue-900 border-white shadow-lg font-extrabold"
+                                : "bg-blue-900/30 text-blue-100 border-blue-700/50 hover:bg-blue-850"
+                        }`}
+                    >
+                        Histórico & Comparação
+                    </button>
+                </div>
             </div>
         </header>
     );
