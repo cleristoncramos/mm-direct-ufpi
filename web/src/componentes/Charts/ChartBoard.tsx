@@ -83,6 +83,7 @@ const ChartBoard = ({
 
     // Estados do Experimento e Marcos Temporais
     const [systemStatus, setSystemStatus] = useState<string>("Idle");
+    const [recoveryPercent, setRecoveryPercent] = useState<number>(0);
     
     // Marcos de tempo UTC (fontes primárias de verdade)
     const [recoveryStartAtUtc, setRecoveryStartAtUtc] = useState<string | null>(null);
@@ -117,6 +118,8 @@ const ChartBoard = ({
         let detectedStability = null;
         let recStartUtc = null;
         let recEndUtc = null;
+        let detectedTotalRecords = 0;
+        let detectedProcessedRecords = 0;
 
         const lines: string[] = [];
         terminalLog.forEach((log) => {
@@ -129,6 +132,18 @@ const ChartBoard = ({
 
         lines.forEach((log) => {
             const text = log.toLowerCase();
+            
+            // Parse total records on indexed log
+            const matchTotal = log.match(/Number of records on indexed log\s*=\s*(\d+)/i);
+            if (matchTotal) {
+                detectedTotalRecords = parseInt(matchTotal[1], 10);
+            }
+
+            // Parse currently processed records
+            const matchProcessed = log.match(/Number of records processed:\s*(\d+)/i);
+            if (matchProcessed) {
+                detectedProcessedRecords = parseInt(matchProcessed[1], 10);
+            }
             
             // Extrai timestamp UTC se presente no log
             const redisTimeRegex = /^\d+:[M|S|C]\s+([\d\s\w\:\.]+)\s+[\*\#\-]/;
@@ -263,7 +278,17 @@ const ChartBoard = ({
             }
         });
 
+        let finalPercent = 0;
+        if (detectedStatus === "Recuperando") {
+            if (detectedTotalRecords > 0) {
+                finalPercent = Math.min(99, Math.round((detectedProcessedRecords / detectedTotalRecords) * 100));
+            }
+        } else if (detectedStatus === "Estável" && detectedFail !== null) {
+            finalPercent = 100;
+        }
+
         if (detectedStatus !== systemStatus) setSystemStatus(detectedStatus);
+        if (finalPercent !== recoveryPercent) setRecoveryPercent(finalPercent);
         if (detectedFail !== failureTime) setFailureTime(detectedFail);
         if (detectedRecStart !== recoveryStartTime) setRecoveryStartTime(detectedRecStart);
         if (detectedRecEnd !== recoveryEndTime) setRecoveryEndTime(detectedRecEnd);
@@ -271,7 +296,7 @@ const ChartBoard = ({
         if (recStartUtc !== recoveryStartAtUtc) setRecoveryStartAtUtc(recStartUtc);
         if (recEndUtc !== recoveryEndAtUtc) setRecoveryEndAtUtc(recEndUtc);
 
-    }, [terminalLog, dataTransfer]);
+    }, [terminalLog, dataTransfer, recoveryPercent]);
 
     // Cálculo robusto do tempo de recuperação baseado estritamente em UTC
     const calculatedRecoveryTimeText = useMemo(() => {
@@ -839,13 +864,21 @@ const ChartBoard = ({
 
                 {/* Centro: Métricas de Status compactas */}
                 <div className="flex flex-wrap justify-center items-center gap-x-6 gap-y-2 text-xs w-full lg:w-auto bg-blue-950/20 border border-blue-900/30 lg:border-none rounded-xl p-2.5 lg:p-0">
-                    <div className="flex items-center space-x-1.5">
+                    <div className="flex items-center space-x-2">
                         <span className="text-blue-200/60 font-bold uppercase tracking-wider text-[9px]">Status:</span>
                         <span className={`font-semibold ${
                             systemStatus === "Estável" ? "text-emerald-300" :
                             systemStatus === "Recuperando" ? "text-amber-300 animate-pulse" :
                             systemStatus === "Falha Simulada" ? "text-rose-300" : "text-blue-300"
-                        }`}>{systemStatus}</span>
+                        }`}>{systemStatus === "Recuperando" ? `Recuperando (${recoveryPercent}%)` : systemStatus}</span>
+                        {systemStatus === "Recuperando" && (
+                            <div className="w-16 h-1.5 bg-blue-950 rounded-full overflow-hidden border border-blue-900/30 flex-shrink-0">
+                                <div 
+                                    className="h-full bg-amber-400 transition-all duration-300"
+                                    style={{ width: `${recoveryPercent}%` }}
+                                />
+                            </div>
+                        )}
                     </div>
                     <div className="h-4 w-[1px] bg-blue-700/40 hidden md:block"></div>
                     <div className="flex items-center space-x-1.5">

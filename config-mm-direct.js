@@ -64,12 +64,12 @@ redisPort = 6379;
 //	Displays some information about log restorer during database recovery process. 
 //	The default value is OFF.
 //
-display_restorer_information = "OFF";  
+display_restorer_information = "ON";  
 //
 //	Time interval (in seconds) to display information about the log indexing when the field
 // display_indexer_information is ON. The default value is 60.
 //
-restorer_information_time_interaval = 5;
+restorer_information_time_interaval = 1;
 //
 //	Replicates indexed log file. When a replica is used, the replication is disabled.
 //	The default value is OFF.
@@ -299,8 +299,8 @@ export function modifyConfigFile(config, rootPath) {
         indexerInformationTimeInteraval = 60,
         redisHostname = "127.0.0.1",
         redisPort = 6379,
-        displayRestorerInformation = "OFF",
-        restorerInformationTimeInteraval = 60,
+        displayRestorerInformation = "ON",
+        restorerInformationTimeInteraval = 1,
         indexedlogReplicated = "OFF",
         indexedlogReplicatedFilename = "logs/indexedLog_rep.db",
         logCorruption = 0,
