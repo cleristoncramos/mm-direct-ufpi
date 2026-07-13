@@ -728,6 +728,14 @@ void initializeIRParameters(){
     server.number_restarts_after_time = 0; //default value
   }
 
+  //restart_daley_time
+  if(config_lookup_int(&cfg, "restart_daley_time", &int_aux)){
+    server.restart_daley_time = int_aux;
+  }
+  else{
+    server.restart_daley_time = 1; //default value
+  }
+
   //preload_database_and_restart
   if(config_lookup_int(&cfg, "preload_database_and_restart", &int_aux)){
     server.preload_database_and_restart = int_aux;
@@ -1256,6 +1264,8 @@ void printIndex(client *c) {
 // the building of graphichs. 
 // The types commandExecuted and indexingReport are implemented in server.h file.
 
+pthread_mutex_t cmd_executed_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /*
     Inserts the first record in the linked list that is is empty command. 
     This command is added only to optmize inserctions of commands by the addCommandExecuted() 
@@ -1296,9 +1306,12 @@ void addCommandExecuted (commandExecuted **last_cmd_executed, char key[50], char
    new->finishTime = finishTime;
    new->type = type;
    new->latency = latency;
+   new->next = NULL;
 
+   pthread_mutex_lock(&cmd_executed_mutex);
    (*last_cmd_executed)->next = new;
    *last_cmd_executed = new;
+   pthread_mutex_unlock(&cmd_executed_mutex);
 }
 
 /*
@@ -1394,27 +1407,55 @@ void *printCommandsExecutedToCSV_thread(){
                     *store = first_cmd_executed_List,
                     *clear = first_cmd_executed_List, *aux; 
     while(server.stop_generate_executed_commands_csv == IR_OFF){
+      pthread_mutex_lock(&cmd_executed_mutex);
       end = last_cmd_executed_List;
+      pthread_mutex_unlock(&cmd_executed_mutex);
 
       //stores in the CSV
       while(store != end && store != NULL){
         sprintf(str, "%s,%s,%lld,%lld,%lld,%c\n", store->key, store->command, store->startTime, store->finishTime, store->latency, store->type);
         fputs(str, ptr_file);
+        
+        pthread_mutex_lock(&cmd_executed_mutex);
         store = store->next;
+        pthread_mutex_unlock(&cmd_executed_mutex);
       }
       fflush(ptr_file);
       
       //clear (free) the stored records
       while(clear != end && clear != NULL){
         aux = clear;
+        pthread_mutex_lock(&cmd_executed_mutex);
         clear = clear->next;
+        pthread_mutex_unlock(&cmd_executed_mutex);
         zfree(aux);
         first_cmd_executed_List = clear;
       }
 
-      sleep(0.05);
+      usleep(50000);
     }
     
+    // Write any remaining commands in the list at exit
+    pthread_mutex_lock(&cmd_executed_mutex);
+    end = last_cmd_executed_List;
+    pthread_mutex_unlock(&cmd_executed_mutex);
+    while(store != NULL){
+      sprintf(str, "%s,%s,%lld,%lld,%lld,%c\n", store->key, store->command, store->startTime, store->finishTime, store->latency, store->type);
+      fputs(str, ptr_file);
+      pthread_mutex_lock(&cmd_executed_mutex);
+      store = store->next;
+      pthread_mutex_unlock(&cmd_executed_mutex);
+    }
+    fflush(ptr_file);
+
+    while(clear != NULL){
+      aux = clear;
+      pthread_mutex_lock(&cmd_executed_mutex);
+      clear = clear->next;
+      pthread_mutex_unlock(&cmd_executed_mutex);
+      zfree(aux);
+    }
+
     fclose(ptr_file);
 
     serverLog(LL_NOTICE, "Generation of executed database commands finished!"
@@ -3119,6 +3160,7 @@ void *indexesSequentialLogToIndexedLogV2() {
     insertFirstRecordToIndex (&first_recordToIndex, &last_recordToIndex);
 
     long long indexing_start_time;
+    long long command_start_seek = 0;
     int argc, j;
     unsigned long len;
     char buf[128];
@@ -3127,6 +3169,7 @@ void *indexesSequentialLogToIndexedLogV2() {
 
     server.indexer_performing = IR_ON;
     while(1) {
+    main_loop_continue: ;
       //Sleeps until a new record is read in the sequential log.
       do{
         //Checks if the indexer recieved a stop signal and breaks the secondary loop if true
@@ -3155,6 +3198,8 @@ void *indexesSequentialLogToIndexedLogV2() {
         //Checks if the indexer recieved a stop signal and exits the secondary loop if true
         if(server.indexer_state == IR_OFF)
           break;
+
+        command_start_seek = seek_log_file;
 
         seek_log_file = seek_log_file + strlen(buf);
 
@@ -3257,15 +3302,20 @@ void *indexesSequentialLogToIndexedLogV2() {
 
     return (void *)count_records;
 
-readerr: /* Read error. If feof(fp) is true, fall through to unexpected EOF. */
-    server.indexer_state = IR_OFF;
-
-    if (!feof(fp)) {
-        serverLog(LL_WARNING,"Indexing error! Unrecoverable error reading the append only file wh: %s", strerror(errno));
-        exit(1);
+readerr: /* Read error. If feof(fp) is true, retry later. */
+    if (feof(fp)) {
+        serverLog(LL_NOTICE, "Temporary EOF reached while reading sequential file command. Retrying later. command_start_seek=%lld", command_start_seek);
+        seek_log_file = command_start_seek;
+        fclose(fp);
+        goto main_loop_continue;
     }
 
+    server.indexer_state = IR_OFF;
+    serverLog(LL_WARNING,"Indexing error! Unrecoverable error reading the append only file wh: %s", strerror(errno));
+    exit(1);
+
 fmterr: /* Format error. */
+    server.indexer_state = IR_OFF;
     serverLog(LL_WARNING," aqui Indexing error! Bad file format reading the sequential file. Last log record read: %s", log_record);
     exit(1);
 }
@@ -3954,7 +4004,8 @@ int restartAfterBechmarking(){
   //if(server.generate_indexing_report_csv == IR_ON)
   //printShutdownTimeToCSV(server.indexing_report_csv_filename, time);
   
-  restartServer(RESTART_SERVER_GRACEFULLY, server.restart_daley_time);
+  int delay_ms = server.restart_daley_time > 0 ? server.restart_daley_time * 1000 : 500;
+  restartServer(RESTART_SERVER_GRACEFULLY, delay_ms);
 
   return 1;
 }
@@ -3982,7 +4033,8 @@ void *restartAfterTime(){
   //if(server.generate_indexing_report_csv == IR_ON)
   //printShutdownTimeToCSV(server.indexing_report_csv_filename, time);
 
-  restartServer(RESTART_SERVER_GRACEFULLY, server.restart_daley_time);
+  int delay_ms = server.restart_daley_time > 0 ? server.restart_daley_time * 1000 : 500;
+  restartServer(RESTART_SERVER_GRACEFULLY, delay_ms);
 
   return (void *)1;
 }
@@ -4133,7 +4185,8 @@ void *corruptIndexedLog(){
     //if(server.generate_indexing_report_csv == IR_ON)
     //printShutdownTimeToCSV(server.indexing_report_csv_filename, time);
 
-    restartServer(RESTART_SERVER_GRACEFULLY, server.restart_daley_time);
+    int delay_ms = server.restart_daley_time > 0 ? server.restart_daley_time * 1000 : 500;
+    restartServer(RESTART_SERVER_GRACEFULLY, delay_ms);
 
     return (void *)1;
   }

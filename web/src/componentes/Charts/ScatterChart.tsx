@@ -30,7 +30,7 @@ export const ScatterChart = ({ chartMode = "default", data }: ScatterChartProps)
         data={chartData}
         options={chartOptions}
         width="100%"
-        height={chartMode === "minimalist" ? "100px" : "220px"}
+        height={chartMode === "minimalist" ? "160px" : "220px"}
       />
     </div>
   );

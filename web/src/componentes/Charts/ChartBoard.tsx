@@ -110,15 +110,24 @@ const ChartBoard = ({
     useEffect(() => {
         if (terminalLog.length === 0) return;
 
-        let detectedStatus = systemStatus;
-        let detectedFail = failureTime;
-        let detectedRecStart = recoveryStartTime;
-        let detectedRecEnd = recoveryEndTime;
-        let detectedStability = stabilityTime;
-        let recStartUtc = recoveryStartAtUtc;
-        let recEndUtc = recoveryEndAtUtc;
+        let detectedStatus = "Idle";
+        let detectedFail = null;
+        let detectedRecStart = null;
+        let detectedRecEnd = null;
+        let detectedStability = null;
+        let recStartUtc = null;
+        let recEndUtc = null;
 
+        const lines: string[] = [];
         terminalLog.forEach((log) => {
+            log.split("\n").forEach((line) => {
+                if (line.trim()) lines.push(line);
+            });
+        });
+
+        let firstLogUtc: string | null = null;
+
+        lines.forEach((log) => {
             const text = log.toLowerCase();
             
             // Extrai timestamp UTC se presente no log
@@ -126,35 +135,130 @@ const ChartBoard = ({
             const matchTime = log.match(redisTimeRegex);
             let logUtcStr: string | null = null;
             if (matchTime) {
-                const parsed = Date.parse(matchTime[1] + " GMT-0300"); // parser Brasília local
-                if (!isNaN(parsed) && isFinite(parsed)) {
-                    logUtcStr = new Date(parsed).toISOString();
+                const parts = matchTime[1].trim().split(/\s+/);
+                if (parts.length >= 4) {
+                    const day = parseInt(parts[0], 10);
+                    const monthStr = parts[1].toLowerCase();
+                    const year = parseInt(parts[2], 10);
+                    const timeParts = parts[3].split(":");
+                    if (timeParts.length >= 3) {
+                        const hours = parseInt(timeParts[0], 10);
+                        const minutes = parseInt(timeParts[1], 10);
+                        const secondsParts = timeParts[2].split(".");
+                        const seconds = parseInt(secondsParts[0], 10);
+                        const ms = secondsParts[1] ? parseInt(secondsParts[1], 10) : 0;
+
+                        const months: { [key: string]: number } = {
+                            jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+                            jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+                            fev: 1, abr: 3, mai: 4, ago: 7, set: 8, out: 9, dez: 11
+                        };
+
+                        const month = months[monthStr.substring(0, 3)];
+                        if (month !== undefined) {
+                            const date = new Date(year, month, day, hours, minutes, seconds, ms);
+                            logUtcStr = date.toISOString();
+                            if (!firstLogUtc) {
+                                firstLogUtc = logUtcStr;
+                            }
+                        }
+                    }
                 }
             }
 
-            if (text.includes("loading the database from")) {
-                detectedStatus = "Carregando Banco";
-                if (logUtcStr) recStartUtc = logUtcStr;
-            } else if (text.includes("memtier benchmark") && text.includes("started")) {
-                detectedStatus = "Executando Carga";
-            } else if (text.includes("user requested shutdown") || text.includes("redis is now ready to exit")) {
-                detectedStatus = "Falha Simulada";
-                if (detectedFail === null && dataTransfer.length > 0) {
-                    detectedFail = dataTransfer[dataTransfer.length - 1][0];
-                }
-            } else if (text.includes("indexed log environment started") || text.includes("loading the database from indexed log")) {
-                detectedStatus = "Recuperando";
-                if (detectedRecStart === null && dataTransfer.length > 0) {
-                    detectedRecStart = dataTransfer[dataTransfer.length - 1][0];
-                }
-                if (logUtcStr) recStartUtc = logUtcStr;
-            } else if (text.includes("ready to accept connections") || text.includes("db loaded from indexed log") || text.includes("db loaded from aof")) {
-                detectedStatus = "Estável";
-                if (logUtcStr) recEndUtc = logUtcStr;
+            const getRelativeSeconds = (utcStr: string | null) => {
+                if (!utcStr || !firstLogUtc) return null;
+                const diff = new Date(utcStr).getTime() - new Date(firstLogUtc).getTime();
+                return diff / 1000;
+            };
 
-                if (detectedRecEnd === null && dataTransfer.length > 0) {
-                    detectedRecEnd = dataTransfer[dataTransfer.length - 1][0];
-                    detectedStability = detectedRecEnd + 2; 
+            // ─── MÁQUINA DE ESTADOS ───
+            // Fase pré-falha:
+            //   Idle → Carregando Banco → Executando Carga → (aguarda falha)
+            // Fase falha:
+            //   → Falha Simulada
+            // Fase pós-falha:
+            //   → Recuperando → Estável
+
+            // 1. Inicialização do ambiente (primeira mensagem do Redis-IR)
+            if (text.includes("indexed log environment started")) {
+                if (detectedFail !== null) {
+                    // Pós-falha: início da recuperação
+                    detectedStatus = "Recuperando";
+                    if (logUtcStr) {
+                        recStartUtc = logUtcStr;
+                        recEndUtc = null;
+                        const relSec = getRelativeSeconds(logUtcStr);
+                        if (relSec !== null) {
+                            detectedRecStart = relSec;
+                            detectedRecEnd = null;
+                        }
+                    }
+                } else {
+                    // Pré-falha: servidor está subindo
+                    detectedStatus = "Carregando Banco";
+                }
+            }
+
+            // 2. Carregamento tradicional (AOF, sem indexed log)
+            else if (text.includes("loading the database from") && !text.includes("indexed log")) {
+                if (detectedFail === null) {
+                    detectedStatus = "Carregando Banco";
+                }
+            }
+
+            // 3. Carregamento em background via indexed log
+            //    Pré-falha: IGNORAR — é operação de fundo enquanto o benchmark já roda.
+            //    Pós-falha: marca o início da recuperação.
+            else if (text.includes("loading the database from indexed log")) {
+                if (detectedFail !== null) {
+                    detectedStatus = "Recuperando";
+                    if (logUtcStr) {
+                        recStartUtc = logUtcStr;
+                        recEndUtc = null;
+                        const relSec = getRelativeSeconds(logUtcStr);
+                        if (relSec !== null) {
+                            detectedRecStart = relSec;
+                            detectedRecEnd = null;
+                        }
+                    }
+                }
+                // Pré-falha: não muda status — é carga de fundo
+            }
+
+            // 4. Benchmark iniciado — só relevante antes da falha
+            else if (text.includes("memtier benchmark") && text.includes("started")) {
+                if (detectedFail === null) {
+                    detectedStatus = "Executando Carga";
+                }
+            }
+
+            // 5. Falha simulada (shutdown programado)
+            else if (text.includes("user requested shutdown") || text.includes("redis is now ready to exit")) {
+                detectedStatus = "Falha Simulada";
+                const relSec = getRelativeSeconds(logUtcStr);
+                if (relSec !== null) {
+                    detectedFail = relSec;
+                }
+            }
+
+            // 6. Banco de dados carregado completamente ou pronto para conexões
+            else if (text.includes("ready to accept connections") || text.includes("db loaded from indexed log") || text.includes("db loaded from aof")) {
+                if (detectedFail !== null) {
+                    detectedStatus = "Estável";
+                    if (logUtcStr) {
+                        recEndUtc = logUtcStr;
+                        const relSec = getRelativeSeconds(logUtcStr);
+                        if (relSec !== null) {
+                            detectedRecEnd = relSec;
+                            detectedStability = relSec + 2;
+                        }
+                    }
+                } else {
+                    // Pré-falha: se ainda estiver em "Carregando Banco" ou "Idle", avança para "Estável"
+                    if (detectedStatus === "Carregando Banco" || detectedStatus === "Idle") {
+                        detectedStatus = "Estável";
+                    }
                 }
             }
         });
@@ -386,7 +490,12 @@ const ChartBoard = ({
     useEffect(() => {
         let isComponentMounted = true;
 
-        const connect = (url: string, onMessage: (data: any) => void, onStateChange: (connected: boolean) => void) => {
+        const connect = (
+            url: string,
+            onMessage: (data: any) => void,
+            onStateChange: (connected: boolean) => void,
+            onClearData?: () => void
+        ) => {
             let socket: WebSocket | null = null;
             let retryDelay = 1000;
             let timer: any = null;
@@ -405,6 +514,7 @@ const ChartBoard = ({
                     console.log(`WebSocket conectado: ${url}`);
                     onStateChange(true);
                     retryDelay = 1000; 
+                    if (onClearData) onClearData();
                     setChartConnections((prev) => {
                         if (socket && !prev.includes(socket)) {
                             return [...prev, socket];
@@ -482,7 +592,11 @@ const ChartBoard = ({
             } catch (e) {
                 console.error("Erro CPU WS parsing:", e);
             }
-        }, setIsCpuConnected);
+        }, setIsCpuConnected, () => {
+            setDataCPU([]);
+            timestampsCpu.current = [];
+            cpuUsage.current = [];
+        });
 
         const dataConn = connect("ws://localhost:8081/data", (data) => {
             try {
@@ -494,7 +608,9 @@ const ChartBoard = ({
             } catch (e) {
                 console.error("Erro Data WS parsing:", e);
             }
-        }, setIsDataConnected);
+        }, setIsDataConnected, () => {
+            setDataTransfer([]);
+        });
 
         const memoryConn = connect("ws://localhost:8081/memory", (data) => {
             try {
@@ -521,7 +637,12 @@ const ChartBoard = ({
             } catch (e) {
                 console.error("Erro Memory WS parsing:", e);
             }
-        }, setIsMemoryConnected);
+        }, setIsMemoryConnected, () => {
+            setDataMemory([]);
+            timestampsMemory.current = [];
+            memoryUsage.current = [];
+            setMaxMemoryUsage(0);
+        });
 
         const latencyConn = connect("ws://localhost:8081/latencia", (data) => {
             try {
@@ -555,7 +676,10 @@ const ChartBoard = ({
             } catch (e) {
                 console.error("Erro Latency WS parsing:", e);
             }
-        }, setIsLatencyConnected);
+        }, setIsLatencyConnected, () => {
+            setDataScatter([]);
+            latencyMapRef.current.clear();
+        });
 
         const latencyInterval = setInterval(() => {
             const map = latencyMapRef.current;
@@ -701,81 +825,79 @@ const ChartBoard = ({
     };
 
     return (
-        <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100 font-sans p-6 space-y-6">
-            <div className="print:hidden space-y-6 flex flex-col flex-1">
-                {/* Cabeçalho do Workbench */}
-                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-2xl gap-6">
-                    {/* Coluna Esquerda: Título e Botões de Exportação */}
-                    <div className="space-y-3 flex-shrink-0">
-                        <div className="flex items-center space-x-3">
-                            <h1 className="text-2xl font-bold tracking-tight text-white">MM-DIRECT Workbench</h1>
-                            <span className="flex h-3 w-3 relative">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                            </span>
-                        </div>
-                        <p className="text-sm text-slate-400 mt-1">Análise empírica e instrumentação experimental em computação de alta performance</p>
-                        
-                        {/* Botões de Exportação na Faixa Superior */}
-                        <div className="flex items-center space-x-2 pt-1">
-                            <button
-                                onClick={downloadActiveJsonReport}
-                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition"
-                            >
-                                Exportar JSON
-                            </button>
-                            <button
-                                onClick={triggerActivePdfPrint}
-                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-750 text-white rounded-lg text-xs font-semibold transition"
-                            >
-                                Exportar PDF
-                            </button>
-                            {(!isCpuConnected || !isDataConnected || !isMemoryConnected || !isLatencyConnected) && (
-                                <button
-                                    onClick={() => setReconnectTrigger(prev => prev + 1)}
-                                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition animate-pulse"
-                                >
-                                    Reconexão Manual
-                                </button>
-                            )}
-                        </div>
-                    </div>
-                    
-                    {/* Coluna Central: Métricas de Status (Centralizadas, mais largas e com menor altura) */}
-                    <div className="flex-1 flex justify-center w-full lg:w-auto">
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full max-w-3xl">
-                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
-                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Status</span>
-                                <div className={`text-sm font-semibold mt-0.5 ${
-                                    systemStatus === "Estável" ? "text-emerald-400" :
-                                    systemStatus === "Recuperando" ? "text-amber-500 animate-pulse" :
-                                    systemStatus === "Falha Simulada" ? "text-rose-500" : "text-blue-400"
-                                }`}>{systemStatus}</div>
-                            </div>
-                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
-                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Modo de Operação</span>
-                                <div className="text-sm font-semibold mt-0.5 text-slate-200">
-                                    {isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}
-                                </div>
-                            </div>
-                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
-                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Tempo de Rec.</span>
-                                <div className="text-sm font-bold mt-0.5 text-blue-400">{calculatedRecoveryTimeText}</div>
-                            </div>
-                            <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2 px-4 text-center sm:text-left min-w-[160px]">
-                                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Atraso de Falha</span>
-                                <div className="text-sm font-semibold mt-0.5 text-slate-300">
-                                    {configData?.restartAfterTime ? `${configData.restartAfterTime}s` : "N/A"}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+        <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100 font-sans w-full">
+            {/* Cabeçalho do Workbench no Header Azul */}
+            <header className="print:hidden bg-my_blue px-6 py-3.5 flex flex-col lg:flex-row justify-between items-center gap-4 shadow-lg text-slate-100 w-full z-10">
+                {/* Lado Esquerdo: Título */}
+                <div className="flex items-center space-x-2.5 flex-shrink-0 w-full lg:w-auto justify-center lg:justify-start">
+                    <h1 className="text-lg font-bold tracking-tight text-white">MM-DIRECT Workbench</h1>
+                    <span className="flex h-2.5 w-2.5 relative">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                    </span>
+                </div>
 
-                    {/* Coluna Direita: Botão RETURN */}
-                    <div className="flex-shrink-0 flex items-center justify-end w-full lg:w-auto">
-                        <ReloadButton onButtonClick={(e: Event) => onReloadButtonClick(e, chartConnections)} />
+                {/* Centro: Métricas de Status compactas */}
+                <div className="flex flex-wrap justify-center items-center gap-x-6 gap-y-2 text-xs w-full lg:w-auto bg-blue-950/20 border border-blue-900/30 lg:border-none rounded-xl p-2.5 lg:p-0">
+                    <div className="flex items-center space-x-1.5">
+                        <span className="text-blue-200/60 font-bold uppercase tracking-wider text-[9px]">Status:</span>
+                        <span className={`font-semibold ${
+                            systemStatus === "Estável" ? "text-emerald-300" :
+                            systemStatus === "Recuperando" ? "text-amber-300 animate-pulse" :
+                            systemStatus === "Falha Simulada" ? "text-rose-300" : "text-blue-300"
+                        }`}>{systemStatus}</span>
+                    </div>
+                    <div className="h-4 w-[1px] bg-blue-700/40 hidden md:block"></div>
+                    <div className="flex items-center space-x-1.5">
+                        <span className="text-blue-200/60 font-bold uppercase tracking-wider text-[9px]">Modo:</span>
+                        <span className="font-semibold text-slate-100">
+                            {isDirectMode ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)"}
+                        </span>
+                    </div>
+                    <div className="h-4 w-[1px] bg-blue-700/40 hidden md:block"></div>
+                    <div className="flex items-center space-x-1.5">
+                        <span className="text-blue-200/60 font-bold uppercase tracking-wider text-[9px]">Tempo Rec:</span>
+                        <span className="font-bold text-blue-300">{calculatedRecoveryTimeText}</span>
+                    </div>
+                    <div className="h-4 w-[1px] bg-blue-700/40 hidden md:block"></div>
+                    <div className="flex items-center space-x-1.5">
+                        <span className="text-blue-200/60 font-bold uppercase tracking-wider text-[9px]">Atraso Falha:</span>
+                        <span className="font-semibold text-slate-100">
+                            {configData?.restartAfterTime ? `${configData.restartAfterTime}s` : "N/A"}
+                        </span>
                     </div>
                 </div>
+
+                {/* Lado Direito: Botões de Exportação e RETURN */}
+                <div className="flex-shrink-0 flex items-center justify-center lg:justify-end gap-3 w-full lg:w-auto">
+                    <div className="flex items-center space-x-2">
+                        <button
+                            onClick={downloadActiveJsonReport}
+                            className="px-3 py-1.5 bg-blue-800/45 hover:bg-blue-850 text-slate-200 border border-blue-700/50 rounded-lg text-xs font-semibold transition"
+                        >
+                            Exportar JSON
+                        </button>
+                        <button
+                            onClick={triggerActivePdfPrint}
+                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-750 text-white rounded-lg text-xs font-semibold transition"
+                        >
+                            Exportar PDF
+                        </button>
+                        {(!isCpuConnected || !isDataConnected || !isMemoryConnected || !isLatencyConnected) && (
+                            <button
+                                onClick={() => setReconnectTrigger(prev => prev + 1)}
+                                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold transition animate-pulse"
+                            >
+                                Reconectar
+                            </button>
+                        )}
+                    </div>
+                    <ReloadButton onButtonClick={(e: Event) => onReloadButtonClick(e, chartConnections)} />
+                </div>
+            </header>
+
+            {/* Conteúdo Principal com padding */}
+            <div className="print:hidden p-6 space-y-6 flex flex-col flex-1">
 
             {/* Grid Principal - Gráfico de Throughput e Detalhes */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">

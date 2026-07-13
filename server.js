@@ -228,21 +228,7 @@ const sanitizePipeline = () => {
 };
 
 // Variáveis de controle
-let total = 0; // Contador de linhas no CSV
-let totalLatencia = 0; // Contador de linhas no CSV
-let database_startup_time = 0; // Armazena o tempo de inicialização do banco de dados
-let database_startup_time_latencia = 0; // Armazena o tempo de inicialização do banco de dados
-const contagemComandos = []; // Armazena os arrays de contagem de comandos por segundo
-let arrayParaVerificarSeJaFoiEnviado = []; // Armazena os arrays para verificação de envio
 let lendoArquivo = false; // Variável de controle para verificar se o arquivo está sendo lido
-const x = [];
-const y = [];
-const x1 = [];
-const x2 = [];
-const y1 = [];
-const y2 = [];
-let databaseStartupCpu = 0;
-let databaseStartupMemoria = 0;
 
 let activeConfig = {};
 let currentRunId = null;
@@ -718,11 +704,11 @@ app.get('/api/runs/:runId/telemetry', (req, res) => {
 });
 
 // função para contagem de comandos por segundo
-const processaCSV = async (ws, inputPath) => {
+const processaCSV = async (ws, inputPath, ctx) => {
   try {
     if (!fs.existsSync(inputPath)) return;
     fs.createReadStream(inputPath, {
-      start: total,
+      start: ctx.total,
     })
       .on('error', (err) => {
         console.error(`Erro na leitura do stream CSV: ${err.message}`);
@@ -732,36 +718,36 @@ const processaCSV = async (ws, inputPath) => {
         console.error(`Erro no parser CSV: ${err.message}`);
       })
       .on('data', (row) => {
-        total++;
+        ctx.total++;
         lendoArquivo = true;
 
         // Processar cada linha do CSV
-        if (total === 1) {
-          database_startup_time = parseInt(row.startTime);
-        } else if (total >= 3) {
+        if (ctx.total === 1) {
+          ctx.database_startup_time = parseInt(row.startTime);
+        } else if (ctx.total >= 3) {
           if (row.type !== '0' && !isNaN(row.finishTime)) {
             const tempoTermino = parseInt(row.finishTime);
-            const tempoEmSegundos = Math.floor((tempoTermino - database_startup_time) / 1000000);
+            const tempoEmSegundos = Math.floor((tempoTermino - ctx.database_startup_time) / 1000000);
 
             if (tempoEmSegundos >= 0) {
-              const entryIndex = contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
+              const entryIndex = ctx.contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
 
               if (entryIndex === -1) {
-                contagemComandos.push([tempoEmSegundos, 1]);
+                ctx.contagemComandos.push([tempoEmSegundos, 1]);
               } else {
-                contagemComandos[entryIndex][1]++;
+                ctx.contagemComandos[entryIndex][1]++;
               }
             }
           }
         }
 
         // Verificar se o tamanho do array aumentou e enviar o penúltimo elemento apenas uma vez
-        for (let i = 0; i < contagemComandos.length; i++) {
-          if (contagemComandos.length > arrayParaVerificarSeJaFoiEnviado.length) {
-            if (i === contagemComandos.length - 2) {
-              arrayParaVerificarSeJaFoiEnviado.push(contagemComandos[i]);
+        for (let i = 0; i < ctx.contagemComandos.length; i++) {
+          if (ctx.contagemComandos.length > ctx.arrayParaVerificarSeJaFoiEnviado.length) {
+            if (i === ctx.contagemComandos.length - 2) {
+              ctx.arrayParaVerificarSeJaFoiEnviado.push(ctx.contagemComandos[i]);
               if (ws.readyState === 1) {
-                ws.send(JSON.stringify(contagemComandos[i]));
+                ws.send(JSON.stringify(ctx.contagemComandos[i]));
               }
             }
           }
@@ -777,11 +763,11 @@ const processaCSV = async (ws, inputPath) => {
 }
 
 // função para calcular latência
-const processaLatencia = async (ws, inputPath) => {
+const processaLatencia = async (ws, inputPath, ctx) => {
   try {
     if (!fs.existsSync(inputPath)) return;
     fs.createReadStream(inputPath, {
-      start: totalLatencia,
+      start: ctx.totalLatencia,
     })
       .on('error', (err) => {
         console.error(`Erro na leitura do stream de Latência: ${err.message}`);
@@ -791,24 +777,24 @@ const processaLatencia = async (ws, inputPath) => {
         console.error(`Erro no parser de Latência: ${err.message}`);
       })
       .on('data', (row) => {
-        totalLatencia++;
+        ctx.totalLatencia++;
         lendoArquivo = true;
 
-        if (totalLatencia === 1) {
-          database_startup_time_latencia = parseInt(row.startTime);
-        } else if (totalLatencia >= 3) {
+        if (ctx.totalLatencia === 1) {
+          ctx.database_startup_time_latencia = parseInt(row.startTime);
+        } else if (ctx.totalLatencia >= 3) {
           if (parseInt(row.type) != '0') {
-            const num = parseInt((parseInt(row.startTime) - database_startup_time_latencia) / 1000000);
+            const num = parseInt((parseInt(row.startTime) - ctx.database_startup_time_latencia) / 1000000);
             if (row.type === 'N') {
-              x1.push(num);
-              y1.push(parseInt(row.latency));
+              ctx.x1.push(num);
+              ctx.y1.push(parseInt(row.latency));
               if (ws.readyState === 1) {
                 ws.send(JSON.stringify({ x1: [num, parseInt(row.latency)] }));
               }
             }
             if (row.type === 'A') {
-              x2.push(num);
-              y2.push(parseInt(row.latency));
+              ctx.x2.push(num);
+              ctx.y2.push(parseInt(row.latency));
               if (ws.readyState === 1) {
                 ws.send(JSON.stringify({ x2: [num, parseInt(row.latency)] }));
               }
@@ -822,7 +808,7 @@ const processaLatencia = async (ws, inputPath) => {
 }
 
 // função para processar o dataset de uso de cpu
-const processaCpu = async (ws, pathCpu) => {
+const processaCpu = async (ws, pathCpu, ctx) => {
   try {
     if (!fs.existsSync(pathCpu)) return;
     const data = await fs.promises.readFile(pathCpu, 'utf-8');
@@ -833,7 +819,7 @@ const processaCpu = async (ws, pathCpu) => {
       if (databaseStartupLine.length < 3) return;
       const databaseStartupTime = parseInt(databaseStartupLine[2]);
 
-      databaseStartupCpu = databaseStartupTime;
+      ctx.databaseStartupCpu = databaseStartupTime;
 
       lines.splice(0, 2); 
 
@@ -841,10 +827,11 @@ const processaCpu = async (ws, pathCpu) => {
         const linha = lines[i].split(';');
         if (linha.length >= 2 && linha[0].match(/^\d+$/)) {
           const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
-          x.push(num);
-          y.push(parseFloat(linha[1]));
+          ctx.x.push(num);
+          const cpuVal = parseFloat(linha[1].replace(',', '.'));
+          ctx.y.push(cpuVal);
           if (ws.readyState === 1) {
-            ws.send(JSON.stringify([num, parseFloat(linha[1])]));
+            ws.send(JSON.stringify([num, cpuVal]));
           }
         }
       }
@@ -855,7 +842,7 @@ const processaCpu = async (ws, pathCpu) => {
 }
 
 // função para processar o dataset de uso de memória
-const processaMemoria = async (ws, pathMemoria) => {
+const processaMemoria = async (ws, pathMemoria, ctx) => {
   try {
     if (!fs.existsSync(pathMemoria)) return;
     const data = await fs.promises.readFile(pathMemoria, 'utf-8');
@@ -866,16 +853,16 @@ const processaMemoria = async (ws, pathMemoria) => {
       if (databaseStartupLine.length < 3) return;
       const databaseStartupTime = parseInt(databaseStartupLine[2]);
 
-      databaseStartupMemoria = databaseStartupTime;
+      ctx.databaseStartupMemoria = databaseStartupTime;
 
       lines.splice(0, 2); 
 
       for (let i = 0; i < lines.length; i++) {
         const linha = lines[i].split(';');
         if (linha.length >= 3 && linha[0].match(/^\d+$/)) {
-          const num = Math.floor((parseInt(linha[0]) - databaseStartupMemoria) / 1000000);
-          x.push(num);
-          y.push(parseFloat(linha[2]));
+          const num = Math.floor((parseInt(linha[0]) - databaseStartupTime) / 1000000);
+          ctx.x.push(num);
+          ctx.y.push(parseFloat(linha[2]));
           if (ws.readyState === 1) {
             ws.send(JSON.stringify([num, parseInt(linha[2])]));
           }
@@ -893,71 +880,125 @@ wss.on('connection', async (ws, req) => {
   try {
     // rota websocket para o dataset de comandos por segundo
     if (req.url === '/data') {
-    const watcher = setupTailWatcher(inputPath, (data) => {
-      const line = data.split(',');
-      const endTime = parseInt(line[2]);
-
-      if (line[0] !== '0' && !isNaN(endTime)) {
-        const tempoEmSegundos = Math.floor((endTime - database_startup_time) / 1000000);
-
-        if (tempoEmSegundos >= 0) {
-          const entryIndex = contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
-
-          if (entryIndex === -1) {
-            contagemComandos.push([tempoEmSegundos, 1]);
-          } else {
-            contagemComandos[entryIndex][1]++;
+      let initialStartupTime = 0;
+      try {
+        if (fs.existsSync(inputPath)) {
+          const fileContent = fs.readFileSync(inputPath, 'utf8');
+          const lines = fileContent.split('\n');
+          for (const line of lines) {
+            if (line.startsWith("Database startup")) {
+              const parts = line.split(',');
+              if (parts.length >= 3 && parts[2]) {
+                initialStartupTime = parseInt(parts[2], 10);
+                break;
+              }
+            }
           }
         }
+      } catch (e) {
+        console.error("Error reading startup time from CSV:", e);
       }
 
-      for (let i = 0; i < contagemComandos.length; i++) {
-        if (contagemComandos.length > arrayParaVerificarSeJaFoiEnviado.length) {
-          if (i === contagemComandos.length - 2) {
-            arrayParaVerificarSeJaFoiEnviado.push(contagemComandos[i]);
-            ws.send(JSON.stringify(contagemComandos[i]));
+      const dataCtx = {
+        total: 0,
+        database_startup_time: initialStartupTime,
+        contagemComandos: [],
+        arrayParaVerificarSeJaFoiEnviado: []
+      };
+
+      const watcher = setupTailWatcher(inputPath, (data) => {
+        const line = data.split(',');
+        const endTime = parseInt(line[2]);
+
+        if (line[0] === "Database startup" || line[0] === "Shutdown") {
+          return;
+        }
+
+        if (line[0] !== '0' && !isNaN(endTime)) {
+          const baseTime = dataCtx.database_startup_time || endTime;
+          const tempoEmSegundos = Math.floor((endTime - baseTime) / 1000000);
+
+          if (tempoEmSegundos >= 0) {
+            const entryIndex = dataCtx.contagemComandos.findIndex(entry => entry[0] === tempoEmSegundos);
+
+            if (entryIndex === -1) {
+              dataCtx.contagemComandos.push([tempoEmSegundos, 1]);
+            } else {
+              dataCtx.contagemComandos[entryIndex][1]++;
+            }
           }
         }
+
+        for (let i = 0; i < dataCtx.contagemComandos.length; i++) {
+          if (dataCtx.contagemComandos.length > dataCtx.arrayParaVerificarSeJaFoiEnviado.length) {
+            if (i === dataCtx.contagemComandos.length - 2) {
+              dataCtx.arrayParaVerificarSeJaFoiEnviado.push(dataCtx.contagemComandos[i]);
+              if (ws.readyState === 1) {
+                ws.send(JSON.stringify(dataCtx.contagemComandos[i]));
+              }
+            }
+          }
+        }
+      });
+
+      // Delay para garantir que o frontend processe o onopen/onClearData antes do batch histórico
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await processaCSV(ws, inputPath, dataCtx);
+
+      ws.on('close', () => {
+        watcher.close();
+      });
+    }
+    
+    // rota websocket para o dataset de uso de cpu
+    else if (req.url === '/cpu') {
+      let initialStartupTime = 0;
+      try {
+        if (fs.existsSync(pathCpu)) {
+          const fileContent = fs.readFileSync(pathCpu, 'utf8');
+          const lines = fileContent.split('\n');
+          if (lines.length > 1) {
+            const parts = lines[1].split(';');
+            if (parts.length >= 3 && parts[2]) {
+              initialStartupTime = parseInt(parts[2], 10);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error reading startup time from CPU log:", e);
       }
-    });
 
-    await processaCSV(ws, inputPath);
+      const cpuCtx = {
+        databaseStartupCpu: initialStartupTime,
+        x: [],
+        y: []
+      };
 
-    ws.on('close', () => {
-      watcher.close();
-      contagemComandos.length = 0;
-      arrayParaVerificarSeJaFoiEnviado.length = 0;
-      total = 0;
-      database_startup_time = 0;
-    });
-  }
-  
-  // rota websocket para o dataset de uso de cpu
-  else if (req.url === '/cpu') {
-    const watcher = setupTailWatcher(pathCpu, (data) => {
-      const lines = data.split(';');
-      const endTime = parseInt(lines[0]);
+      const watcher = setupTailWatcher(pathCpu, (data) => {
+        const lines = data.split(';');
+        const endTime = parseInt(lines[0]);
 
-      if (lines[0] === "Database startup") {
-        databaseStartupCpu = parseInt(lines[2]);
-      }
+        if (lines[0] === "Database startup") {
+          return;
+        }
 
-      if (lines[0].match(/^\d+$/)) {
-        const num = Math.floor((endTime - databaseStartupCpu) / 1000000);
-        x.push(num);
-        y.push(parseFloat(lines[1]));
-        ws.send(JSON.stringify([num, parseFloat(lines[1])]));
-      }
-    });
+        if (lines[0].match(/^\d+$/)) {
+          const baseTime = cpuCtx.databaseStartupCpu || endTime;
+          const num = Math.floor((endTime - baseTime) / 1000000);
+          const cpuVal = parseFloat(lines[1].replace(',', '.'));
+          cpuCtx.x.push(num);
+          cpuCtx.y.push(cpuVal);
+          ws.send(JSON.stringify([num, cpuVal]));
+        }
+      });
 
-    await processaCpu(ws, pathCpu);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      await processaCpu(ws, pathCpu, cpuCtx);
 
-    ws.on('close', () => {
-      watcher.close();
-      x.length = 0;
-      y.length = 0;
-    });
-  }
+      ws.on('close', () => {
+        watcher.close();
+      });
+    }
   
   // rota para iniciar o servidor MM-DIRECT
   else if (req.url === '/start') {
@@ -1082,23 +1123,47 @@ wss.on('connection', async (ws, req) => {
   }
 
   else if (req.url === '/memory') {
+    let initialStartupTime = 0;
+    try {
+      if (fs.existsSync(pathCpu)) {
+        const fileContent = fs.readFileSync(pathCpu, 'utf8');
+        const lines = fileContent.split('\n');
+        if (lines.length > 1) {
+          const parts = lines[1].split(';');
+          if (parts.length >= 3 && parts[2]) {
+            initialStartupTime = parseInt(parts[2], 10);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error reading startup time from Memory log:", e);
+    }
+
+    const memCtx = {
+      databaseStartupMemoria: initialStartupTime,
+      x: [],
+      y: []
+    };
+
     const watcher = setupTailWatcher(pathCpu, (data) => {
       const lines = data.split(';');
       const endTime = parseInt(lines[0]);
 
       if (lines[0] === "Database startup") {
-        databaseStartupMemoria = parseInt(lines[2]);
+        return;
       }
 
       if (lines[0].match(/^\d+$/)) {
-        const num = Math.floor((endTime - databaseStartupMemoria) / 1000000);
-        x.push(num);
-        y.push(parseFloat(lines[2]));
+        const baseTime = memCtx.databaseStartupMemoria || endTime;
+        const num = Math.floor((endTime - baseTime) / 1000000);
+        memCtx.x.push(num);
+        memCtx.y.push(parseFloat(lines[2]));
         ws.send(JSON.stringify([num, parseInt(lines[2])]));
       }
     });
 
-    await processaMemoria(ws, pathCpu);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await processaMemoria(ws, pathCpu, memCtx);
 
     ws.on('close', () => {
       watcher.close();
@@ -1106,27 +1171,61 @@ wss.on('connection', async (ws, req) => {
   }
 
   else if (req.url === '/latencia') {
+    let initialStartupTime = 0;
+    try {
+      if (fs.existsSync(inputPath)) {
+        const fileContent = fs.readFileSync(inputPath, 'utf8');
+        const lines = fileContent.split('\n');
+        for (const line of lines) {
+          if (line.startsWith("Database startup")) {
+            const parts = line.split(',');
+            if (parts.length >= 3 && parts[2]) {
+              initialStartupTime = parseInt(parts[2], 10);
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error reading startup time from CSV:", e);
+    }
+
+    const latCtx = {
+      totalLatencia: 0,
+      database_startup_time_latencia: initialStartupTime,
+      x1: [],
+      y1: [],
+      x2: [],
+      y2: []
+    };
+
     const watcher = setupTailWatcher(inputPath, (data) => {
       const lines = data.split(',');
       const endTime = parseInt(lines[2]);
 
+      if (lines[0] === "Database startup" || lines[0] === "Shutdown") {
+        return;
+      }
+
       if (lines[0] !== '0' && !isNaN(endTime)) {
-        const num = Math.floor((endTime - database_startup_time) / 1000000);
+        const baseTime = latCtx.database_startup_time_latencia || endTime;
+        const num = Math.floor((endTime - baseTime) / 1000000);
 
         if (lines[5] === 'N') {
-          x1.push(num);
-          y1.push(parseInt(lines[4]));
+          latCtx.x1.push(num);
+          latCtx.y1.push(parseInt(lines[4]));
           ws.send(JSON.stringify({ x1: [num, parseInt(lines[4])] }));
         }
         if (lines[5] === 'A') {
-          x2.push(num);
-          y2.push(parseInt(lines[4]));
+          latCtx.x2.push(num);
+          latCtx.y2.push(parseInt(lines[4]));
           ws.send(JSON.stringify({ x2: [num, parseInt(lines[4])] }));
         }
       }
     });
 
-    await processaLatencia(ws, inputPath);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await processaLatencia(ws, inputPath, latCtx);
 
     ws.on('close', () => {
       watcher.close();

@@ -54,6 +54,18 @@ const App = () => {
         if (e) {
             console.log("Reiniciando experimento...");
         }
+        
+        // Dispara parada limpa do servidor Redis antes de retornar
+        try {
+            const stopWs = new WebSocket("ws://localhost:8081/stop");
+            stopWs.onopen = () => {
+                console.log("Comando de desligamento limpo (shutdown) enviado ao Redis.");
+                setTimeout(() => stopWs.close(), 500);
+            };
+        } catch (err) {
+            console.error("Erro ao conectar no stop WS:", err);
+        }
+
         connectionsArray.forEach((conection: WebSocket) => conection.close())
         startConnection?.close()
         setLogs([]);
@@ -66,9 +78,9 @@ const App = () => {
 
     return (
         <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-            {/* Oculta o NavBar durante a impressão do PDF */}
+            {/* Oculta o NavBar durante a execução do experimento ou impressão do PDF */}
             <div className="print:hidden">
-                <NavBar />
+                {!generateArquive && <NavBar />}
             </div>
 
             <main className="flex-1 flex flex-col justify-start">

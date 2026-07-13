@@ -15,7 +15,13 @@ const MemoryChart = ({chartMode , data }: cpuChartProps) => {
   }
 
   const chartData = [["Timestamp ", "Memory Usage (MB)"], ...data];
-  const chartOptions = chartModeList(chartMode, "Memory Usage (MB)");
+  const baseOptions = chartModeList(chartMode, "Memory Usage (MB)");
+  const chartOptions = {
+    ...baseOptions,
+    colors: ["#6366f1"], // Indigo line
+    areaOpacity: 0.2, // Subtle area fill
+    lineWidth: 1.5,
+  };
 
   return (
     <div
@@ -23,11 +29,11 @@ const MemoryChart = ({chartMode , data }: cpuChartProps) => {
       className="mx-auto text-center pt-3 pb-1 bg-slate-900/60 backdrop-blur-md rounded-lg border border-slate-800"
     >
       <Chart
-        chartType="LineChart"
+        chartType="AreaChart"
         options={chartOptions}
         data={chartData}
         width="100%"
-        height={chartMode === "minimalist" ? "100px" : "220px"}
+        height={chartMode === "minimalist" ? "160px" : "220px"}
       />
     </div>
   );
