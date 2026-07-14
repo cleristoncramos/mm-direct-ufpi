@@ -17,7 +17,9 @@ const NavBar = ({ currentTab, setCurrentTab }: NavBarProps) => {
                         </span>
                     </div>
                     <p className="text-[10px] text-blue-200/70 leading-normal hidden md:block font-sans">
-                        Plataforma de execução e instrumentação científica para o banco de dados MM-DIRECT. Configure o ensaio utilizando os parâmetros abaixo e inicie a carga para gerar a telemetria em tempo real.
+                        Plataforma de execução e instrumentação científica para o banco de dados MM-DIRECT.
+                        <br />
+                        Configure o ensaio utilizando os parâmetros abaixo e inicie a carga para gerar a telemetria em tempo real.
                     </p>
                 </div>
 
