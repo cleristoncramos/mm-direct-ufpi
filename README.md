@@ -127,7 +127,7 @@ A instrumentação científica de um ensaio obedece a um fluxo manual sequencial
 2. **Inicialização do Ensaio:** Clique no botão **START** para gravar a configuração no `redis_ir.conf` e disparar a execução do servidor `redis-server`. Os WebSockets de monitoramento abrirão conexões ativas.
 3. **Fase Pré-Falha (Carga):** A telemetria iniciará o monitoramento da vazão da carga aplicada pelo `memtier_benchmark` (se configurado como ON) no gráfico de Throughput, além do consumo de CPU e memória RAM. O status indicará "Executando Carga".
 4. **Fase de Falha:** O sistema aplicará a falha física simulada (desligamento forçado controlado). O status mudará para "Falha Simulada" e a curva do Throughput sofrerá queda abrupta até zero.
-5. **Fase de Recuperação:** O servidor é reiniciado automaticamente para restaurar o estado estável. O status mudará para "Recuperando (X%)". O acompanhamento percentual e a barra de progresso do restorer atualizarão na tela de segundo em segundo com base nos registros lidos pelo indexador no Berkeley DB.
+5. **Fase de Recuperação:** O servidor é reiniciado automaticamente para restaurar o estado estável. O status mudará para "Recuperando (X%)". O acompanhamento percentual e a barra de progresso do restorer atualizarão na tela de segundo em segundo com base nos registros lidos pelo indexador no Berkeley DB. Durante essa fase, o campo "Tempo de Recuperação" exibe um contador de tempo (cronômetro) do tempo total de recuperação.
 6. **Estabilização:** Após a conclusão total do carregamento pelo indexador, o status transiciona para "Estável". O Throughput de gravação/leitura será plenamente restabelecido e a telemetria será mantida até a finalização da execução.
 7. **Finalização do Experimento:** Clique no botão **RETURN** na barra de navegação. A aplicação enviará um comando de desligamento ordenado ao Redis (`redis-cli shutdown`), fechará os WebSockets e consolidará os resultados salvando os relatórios de forma ordenada na estrutura de pastas físicas de ensaio (`runs`).
 
@@ -181,11 +181,6 @@ Para garantir a confiabilidade acadêmica dos experimentos, o MM-DIRECT obedece 
 
 * O ambiente experimental de controle e medição de telemetria é otimizado para sistemas operacionais baseados em Unix (Ubuntu Linux), dependendo de chamadas nativas do kernel para amostragem física de processos e fuser de rede.
 * O processo do Redis necessita de privilégios elevados para a correta inicialização em portas locais controladas caso processos residuais não sejam terminados.
-
-## Próximos Passos
-
-* Integração de suporte a novos benchmarks sintéticos além do memtier_benchmark (ex: YCSB - Yahoo! Cloud Serving Benchmark).
-* Implementação de rotinas automáticas de clusterização experimental para instrumentação de múltiplos nós replicados com recuperação concorrente.
 
 ## Contexto Acadêmico
 
