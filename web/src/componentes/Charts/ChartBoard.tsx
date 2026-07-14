@@ -673,14 +673,14 @@ const ChartBoard = ({
                     setDataMemory((prev) => {
                         const next = [...prev];
                         if (next.length > 0) next[next.length - 1] = [message[0], media];
-                        if (media > maxMemoryUsage) setMaxMemoryUsage(media);
                         return next;
                     });
+                    setMaxMemoryUsage((prev) => Math.max(prev, media));
                 } else {
                     setDataMemory((prev) => {
-                        if (usageMb > maxMemoryUsage) setMaxMemoryUsage(usageMb);
                         return [...prev, [message[0], usageMb]];
                     });
+                    setMaxMemoryUsage((prev) => Math.max(prev, usageMb));
                 }
             } catch (e) {
                 console.error("Erro Memory WS parsing:", e);
