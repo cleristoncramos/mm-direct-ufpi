@@ -88,6 +88,7 @@ const ChartBoard = ({
     // Estados do Experimento e Marcos Temporais
     const [systemStatus, setSystemStatus] = useState<string>("Idle");
     const [recoveryPercent, setRecoveryPercent] = useState<number>(0);
+    const [recoveryElapsed, setRecoveryElapsed] = useState<number | null>(null);
     
     // Marcos de tempo UTC (fontes primárias de verdade)
     const [recoveryStartAtUtc, setRecoveryStartAtUtc] = useState<string | null>(null);
@@ -302,12 +303,34 @@ const ChartBoard = ({
 
     }, [terminalLog, dataTransfer, recoveryPercent]);
 
+    // Cronômetro em tempo real para a fase de recuperação
+    useEffect(() => {
+        if (systemStatus !== "Recuperando" || !recoveryStartAtUtc) {
+            setRecoveryElapsed(null);
+            return;
+        }
+
+        const updateTime = () => {
+            const startMs = new Date(recoveryStartAtUtc).getTime();
+            const nowMs = Date.now();
+            const diffSeconds = Math.max(0, (nowMs - startMs) / 1000);
+            setRecoveryElapsed(diffSeconds);
+        };
+        updateTime();
+
+        const interval = setInterval(updateTime, 100); // Atualiza a cada 100ms para fluidez
+        return () => clearInterval(interval);
+    }, [systemStatus, recoveryStartAtUtc]);
+
     // Cálculo robusto do tempo de recuperação baseado estritamente em UTC
     const calculatedRecoveryTimeText = useMemo(() => {
         if (!recoveryStartAtUtc) {
             return "--";
         }
         if (!recoveryEndAtUtc) {
+            if (recoveryElapsed !== null) {
+                return `Em andamento (${recoveryElapsed.toFixed(1)}s)`;
+            }
             return "Em andamento";
         }
 
@@ -324,7 +347,7 @@ const ChartBoard = ({
         }
 
         return `${diffSeconds.toFixed(3)}s`;
-    }, [recoveryStartAtUtc, recoveryEndAtUtc]);
+    }, [recoveryStartAtUtc, recoveryEndAtUtc, recoveryElapsed]);
 
     const activeTimeline = useMemo(() => {
         const dStartupToCrash = (failureTime !== null) ? failureTime : null;
