@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState, useRef } from "react";
-import { Chart } from "react-google-charts";
 import CpuChart from "./CpuChart";
 import TransactionChart from "./TransferChart";
 import MemoryChart from "./MemoryChart";
@@ -38,26 +37,31 @@ const ChartBoard = ({
         return num.toFixed(decimals).replace(".", ",");
     };
 
-    const printChartOptions = (title: string, yTitle: string, color: string) => ({
-        title,
-        backgroundColor: "white",
-        chartArea: { width: "80%", height: "65%", top: "15%", left: "12%" },
-        titleTextStyle: { color: "black", fontSize: 9, fontName: "Times New Roman", bold: true },
-        hAxis: {
-            title: "Tempo (s)",
-            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
-            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
-            gridlines: { color: "#e2e8f0" }
+    const printChartOptionsJS = (title: string, yTitle: string) => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            x: {
+                type: "linear" as const,
+                grid: { color: "#e2e8f0" },
+                ticks: { color: "black", font: { family: "Times New Roman", size: 7 } },
+                title: { display: true, text: "Tempo (s)", color: "black", font: { family: "Times New Roman", size: 8, style: "italic" as const } }
+            },
+            y: {
+                grid: { color: "#e2e8f0" },
+                ticks: { color: "black", font: { family: "Times New Roman", size: 7 } },
+                title: { display: true, text: yTitle, color: "black", font: { family: "Times New Roman", size: 8, style: "italic" as const } }
+            }
         },
-        vAxis: {
-            title: yTitle,
-            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
-            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
-            gridlines: { color: "#e2e8f0" }
-        },
-        colors: [color],
-        legend: { position: "none" },
-        curveType: "function"
+        plugins: {
+            legend: { display: false },
+            title: {
+                display: true,
+                text: title,
+                color: "black",
+                font: { family: "Times New Roman", size: 9, weight: "bold" as const }
+            }
+        }
     });
 
     const activeRunId = useMemo(() => String(Date.now()), []);
@@ -339,32 +343,51 @@ const ChartBoard = ({
     }, [failureTime, recoveryStartTime, recoveryEndTime, stabilityTime]);
 
     const printCpuChartData = useMemo(() => {
-        const header = ["Tempo (s)", "CPU (%)"];
-        if (dataCPU.length === 0) return [header, [0, 0]];
-        return [
-            header,
-            ...dataCPU
-        ];
+        const sortedData = [...dataCPU].sort((a, b) => a[0] - b[0]);
+        return {
+            datasets: [
+                {
+                    label: "Uso de CPU",
+                    data: sortedData.map((item) => ({ x: item[0], y: item[1] })),
+                    borderColor: "#b91c1c", // Red for print
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0.15
+                }
+            ]
+        };
     }, [dataCPU]);
 
     const printRamChartData = useMemo(() => {
-        const header = ["Tempo (s)", "RAM (MB)"];
-        if (dataMemory.length === 0) return [header, [0, 0]];
-        return [
-            header,
-            ...dataMemory
-        ];
+        const sortedData = [...dataMemory].sort((a, b) => a[0] - b[0]);
+        return {
+            datasets: [
+                {
+                    label: "Uso de Memória RAM",
+                    data: sortedData.map((item) => ({ x: item[0], y: item[1] })),
+                    borderColor: "#047857", // Green for print
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0.15
+                }
+            ]
+        };
     }, [dataMemory]);
 
     const printThroughputChartData = useMemo(() => {
         const failT = failureTime ?? recoveryStartTime ?? Infinity;
         const recEnd = recoveryEndTime ?? Infinity;
 
+        // Ordena os dados cronologicamente pelo tempo (eixo x) para evitar linhas diagonais confusas
+        const sortedData = [...dataTransfer].sort((a, b) => a[0] - b[0]);
+
         return {
             datasets: [
                 {
                     label: "Throughput",
-                    data: dataTransfer.map((item) => ({ x: item[0], y: item[1] })),
+                    data: sortedData.map((item) => ({ x: item[0], y: item[1] })),
                     borderColor: "#3b82f6", // Default fallback color
                     borderWidth: 1.5,
                     pointRadius: 0,
@@ -1383,23 +1406,29 @@ const ChartBoard = ({
                                     <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
                                 )}
                             </div>
-                            <div className="border border-black p-2 bg-white">
-                                <Chart
-                                    chartType="LineChart"
-                                    data={printCpuChartData}
-                                    options={printChartOptions("Perfil de Uso de CPU ao Longo do Tempo (Ativo)", "CPU (%)", "#b91c1c")}
-                                    width="100%"
-                                    height="130px"
-                                />
+                            <div className="border border-black p-2 bg-white" style={{ height: "130px" }}>
+                                {dataCPU.length > 0 ? (
+                                    <Line
+                                        data={printCpuChartData}
+                                        options={printChartOptionsJS("Perfil de Uso de CPU ao Longo do Tempo (Ativo)", "CPU (%)")}
+                                        width="100%"
+                                        height="100%"
+                                    />
+                                ) : (
+                                    <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
+                                )}
                             </div>
-                            <div className="border border-black p-2 bg-white col-span-2">
-                                <Chart
-                                    chartType="LineChart"
-                                    data={printRamChartData}
-                                    options={printChartOptions("Perfil de Consumo de RAM ao Longo do Tempo (Ativo)", "RAM (MB)", "#047857")}
-                                    width="100%"
-                                    height="130px"
-                                />
+                            <div className="border border-black p-2 bg-white col-span-2" style={{ height: "130px" }}>
+                                {dataMemory.length > 0 ? (
+                                    <Line
+                                        data={printRamChartData}
+                                        options={printChartOptionsJS("Perfil de Consumo de RAM ao Longo do Tempo (Ativo)", "RAM (MB)")}
+                                        width="100%"
+                                        height="100%"
+                                    />
+                                ) : (
+                                    <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
+                                )}
                             </div>
                         </div>
                     </section>

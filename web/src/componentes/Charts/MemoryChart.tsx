@@ -1,42 +1,80 @@
-import { Chart } from "react-google-charts";
-import { chartModeList } from "./ChartFunctions"
-import Loading from "./Loading"
+import { useMemo } from "react";
+import { Line } from "react-chartjs-2";
+import { Chart as ChartJS, registerables, ChartOptions } from "chart.js";
+import Loading from "./Loading";
 
-interface cpuChartProps {
-  data: [number, number][];
-  chartMode: "default" | "minimalist"
+try {
+    ChartJS.register(...registerables);
+} catch (e) {
+    console.error("Error registering ChartJS in MemoryChart", e);
 }
 
-const MemoryChart = ({chartMode , data }: cpuChartProps) => {
-  if (data.length === 0) {
+interface memoryChartProps {
+    data: [number, number][];
+    chartMode: "default" | "minimalist";
+}
+
+const MemoryChart = ({ chartMode, data }: memoryChartProps) => {
+    if (data.length === 0) {
+        return <Loading />;
+    }
+
+    // Ordena os dados pelo tempo (eixo x) para evitar linhas diagonais confusas
+    const sortedData = useMemo(() => {
+        return [...data].sort((a, b) => a[0] - b[0]);
+    }, [data]);
+
+    const chartData = useMemo(() => {
+        return {
+            datasets: [
+                {
+                    label: "Uso de Memória RAM",
+                    data: sortedData.map((item) => ({ x: item[0], y: item[1] })),
+                    borderColor: "#6366f1", // Indigo
+                    backgroundColor: "rgba(99, 102, 241, 0.15)", // Subtle area fill
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    fill: true,
+                    tension: 0.2,
+                }
+            ]
+        };
+    }, [sortedData]);
+
+    const chartOptions = useMemo<ChartOptions<"line">>(() => {
+        const isMinimal = chartMode === "minimalist";
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: "linear" as const,
+                    display: !isMinimal,
+                    grid: { color: "#334155" },
+                    ticks: { color: "#94a3b8" }
+                },
+                y: {
+                    display: !isMinimal,
+                    grid: { color: "#334155" },
+                    ticks: { color: "#94a3b8" }
+                }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: { enabled: !isMinimal }
+            }
+        };
+    }, [chartMode]);
+
     return (
-      <Loading />
+        <div
+            id="Memory_chart"
+            className="w-full h-[160px] pt-2 pb-1 bg-slate-900/40 rounded-lg border border-slate-800/80"
+        >
+            <Line data={chartData} options={chartOptions} />
+        </div>
     );
-  }
-
-  const chartData = [["Timestamp ", "Memory Usage (MB)"], ...data];
-  const baseOptions = chartModeList(chartMode, "Memory Usage (MB)");
-  const chartOptions = {
-    ...baseOptions,
-    colors: ["#6366f1"], // Indigo line
-    areaOpacity: 0.2, // Subtle area fill
-    lineWidth: 1.5,
-  };
-
-  return (
-    <div
-      id="Memory_chart"
-      className="mx-auto text-center pt-3 pb-1 bg-slate-900/60 backdrop-blur-md rounded-lg border border-slate-800"
-    >
-      <Chart
-        chartType="AreaChart"
-        options={chartOptions}
-        data={chartData}
-        width="100%"
-        height={chartMode === "minimalist" ? "160px" : "220px"}
-      />
-    </div>
-  );
 };
 
 export default MemoryChart;
