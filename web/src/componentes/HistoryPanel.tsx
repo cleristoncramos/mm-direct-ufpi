@@ -1,5 +1,12 @@
 import { useEffect, useState, useMemo } from "react";
-import { Chart } from "react-google-charts";
+import { Line } from "react-chartjs-2";
+import { Chart as ChartJS, registerables, ChartOptions } from "chart.js";
+
+try {
+    ChartJS.register(...registerables);
+} catch (e) {
+    console.error("Error registering ChartJS in HistoryPanel", e);
+}
 
 interface HistoryPanelProps {
     onBack: () => void;
@@ -93,7 +100,7 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
 
     // 3. Mescla as curvas de vazão para o gráfico de comparação
     const comparisonThroughputData = useMemo(() => {
-        if (!telemetryA || !telemetryB || !runA || !runB) return [];
+        if (!telemetryA || !telemetryB || !runA || !runB) return null;
 
         const map = new Map<number, [number | null, number | null]>();
 
@@ -110,38 +117,59 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
         });
 
         const sortedSecs = Array.from(map.keys()).sort((a, b) => a - b);
-        const header = ["Tempo (s)", `${runA.metadata?.mode} (Run A)`, `${runB.metadata?.mode} (Run B)`];
 
-        return [
-            header,
-            ...sortedSecs.map((sec) => {
-                const vals = map.get(sec)!;
-                return [sec, vals[0], vals[1]];
-            })
-        ];
+        return {
+            datasets: [
+                {
+                    label: `${runA.metadata?.mode} (Run A)`,
+                    data: sortedSecs.map((sec) => ({ x: sec, y: map.get(sec)![0] })),
+                    borderColor: "#3b82f6", // Blue
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0.15,
+                    spanGaps: true
+                },
+                {
+                    label: `${runB.metadata?.mode} (Run B)`,
+                    data: sortedSecs.map((sec) => ({ x: sec, y: map.get(sec)![1] })),
+                    borderColor: "#10b981", // Green
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0.15,
+                    spanGaps: true
+                }
+            ]
+        };
     }, [telemetryA, telemetryB, runA, runB]);
 
     // Opções de design escuro profissional para o gráfico de comparação
-    const comparisonChartOptions = {
-        backgroundColor: "transparent",
-        chartArea: { width: "90%", height: "75%", top: "12%", left: "7%" },
-        titleTextStyle: { color: "#cbd5e1", fontSize: 14, fontName: "Inter, monospace", bold: true },
-        hAxis: {
-            title: "Tempo do Experimento (segundos)",
-            titleTextStyle: { color: "#94a3b8", fontSize: 11 },
-            textStyle: { color: "#94a3b8", fontSize: 10 },
-            gridlines: { color: "#334155" }
-        },
-        vAxis: {
-            title: "Operações por Segundo (ops/s)",
-            titleTextStyle: { color: "#94a3b8", fontSize: 11 },
-            textStyle: { color: "#94a3b8", fontSize: 10 },
-            gridlines: { color: "#334155" }
-        },
-        colors: ["#3b82f6", "#10b981"],
-        legend: { position: "bottom", textStyle: { color: "#cbd5e1", fontSize: 11 } },
-        curveType: "function"
-    };
+    const comparisonChartOptionsJS = useMemo<ChartOptions<"line">>(() => {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: "linear" as const,
+                    grid: { color: "#334155" }, // slate-700
+                    ticks: { color: "#94a3b8" },
+                    title: { display: true, text: "Tempo do Experimento (segundos)", color: "#cbd5e1" }
+                },
+                y: {
+                    grid: { color: "#334155" },
+                    ticks: { color: "#94a3b8" },
+                    title: { display: true, text: "Operações por Segundo (ops/s)", color: "#cbd5e1" }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    labels: { color: "#cbd5e1" }
+                }
+            }
+        };
+    }, []);
 
     // Helper para formatar números em português do Brasil
     const formatPtBr = (val: number | string | undefined | null, decimals = 3) => {
@@ -158,27 +186,55 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
     };
 
     // Opções de gráficos em preto e branco de alta legibilidade para a impressão PDF
-    const printChartOptions = (title: string, yTitle: string, color: string) => ({
-        title,
-        backgroundColor: "white",
-        chartArea: { width: "80%", height: "65%", top: "15%", left: "12%" },
-        titleTextStyle: { color: "black", fontSize: 9, fontName: "Times New Roman", bold: true },
-        hAxis: {
-            title: "Tempo (s)",
-            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
-            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
-            gridlines: { color: "#e2e8f0" }
+    const printChartOptionsJS = (title: string, yTitle: string) => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            x: {
+                type: "linear" as const,
+                grid: { color: "#e2e8f0" },
+                ticks: { color: "black", font: { family: "Times New Roman", size: 7 } },
+                title: { display: true, text: "Tempo (s)", color: "black", font: { family: "Times New Roman", size: 8, style: "italic" as const } }
+            },
+            y: {
+                grid: { color: "#e2e8f0" },
+                ticks: { color: "black", font: { family: "Times New Roman", size: 7 } },
+                title: { display: true, text: yTitle, color: "black", font: { family: "Times New Roman", size: 8, style: "italic" as const } }
+            }
         },
-        vAxis: {
-            title: yTitle,
-            titleTextStyle: { color: "black", fontSize: 8, fontName: "Times New Roman", italic: true },
-            textStyle: { color: "black", fontSize: 7, fontName: "Times New Roman" },
-            gridlines: { color: "#e2e8f0" }
-        },
-        colors: [color],
-        legend: { position: "none" },
-        curveType: "function"
+        plugins: {
+            legend: { display: false },
+            title: {
+                display: true,
+                text: title,
+                color: "black",
+                font: { family: "Times New Roman", size: 9, weight: "bold" as const }
+            }
+        }
     });
+
+    const historyChartOptionsJS = (yTitle: string) => {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    type: "linear" as const,
+                    grid: { color: "#1e293b" }, // slate-800
+                    ticks: { color: "#64748b" },
+                    title: { display: true, text: "Tempo (s)", color: "#94a3b8" }
+                },
+                y: {
+                    grid: { color: "#1e293b" },
+                    ticks: { color: "#64748b" },
+                    title: { display: true, text: yTitle, color: "#94a3b8" }
+                }
+            },
+            plugins: {
+                legend: { display: false }
+            }
+        };
+    };
 
     // Calcula marcos de cronologia e durações do ensaio selecionado
     const selectedRunTimeline = useMemo(() => {
@@ -223,36 +279,65 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
     }, [selectedRun]);
 
     const selectedCpuChartData = useMemo(() => {
-        const header = ["Tempo (s)", "CPU (%)"];
         if (!selectedTelemetry || !selectedTelemetry.monitoring || selectedTelemetry.monitoring.length === 0) {
-            return [header, [0, 0]];
+            return null;
         }
-        return [
-            header,
-            ...selectedTelemetry.monitoring.map(([sec, cpu]: any) => [sec, cpu])
-        ];
+        const sortedData = [...selectedTelemetry.monitoring].sort((a, b) => a[0] - b[0]);
+        return {
+            datasets: [
+                {
+                    label: "Uso de CPU (%)",
+                    data: sortedData.map(([sec, cpu]: any) => ({ x: sec, y: cpu })),
+                    borderColor: "#ef4444", // Red
+                    backgroundColor: "rgba(239, 68, 68, 0.15)",
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: true,
+                    tension: 0.15,
+                }
+            ]
+        };
     }, [selectedTelemetry]);
 
     const selectedRamChartData = useMemo(() => {
-        const header = ["Tempo (s)", "RAM (MB)"];
         if (!selectedTelemetry || !selectedTelemetry.monitoring || selectedTelemetry.monitoring.length === 0) {
-            return [header, [0, 0]];
+            return null;
         }
-        return [
-            header,
-            ...selectedTelemetry.monitoring.map(([sec, _, ramKb]: any) => [sec, ramKb / 1024])
-        ];
+        const sortedData = [...selectedTelemetry.monitoring].sort((a, b) => a[0] - b[0]);
+        return {
+            datasets: [
+                {
+                    label: "Consumo de RAM (MB)",
+                    data: sortedData.map(([sec, _, ramKb]: any) => ({ x: sec, y: ramKb / 1024 })),
+                    borderColor: "#10b981", // Green
+                    backgroundColor: "rgba(16, 185, 129, 0.15)",
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: true,
+                    tension: 0.15,
+                }
+            ]
+        };
     }, [selectedTelemetry]);
 
     const selectedThroughputChartData = useMemo(() => {
-        const header = ["Tempo (s)", "Throughput (ops/s)"];
         if (!selectedTelemetry || !selectedTelemetry.throughput || selectedTelemetry.throughput.length === 0) {
-            return [header, [0, 0]];
+            return null;
         }
-        return [
-            header,
-            ...selectedTelemetry.throughput
-        ];
+        const sortedData = [...selectedTelemetry.throughput].sort((a, b) => a[0] - b[0]);
+        return {
+            datasets: [
+                {
+                    label: "Throughput (ops/s)",
+                    data: sortedData.map(([sec, val]: any) => ({ x: sec, y: val })),
+                    borderColor: "#3b82f6", // Blue
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0.15,
+                }
+            ]
+        };
     }, [selectedTelemetry]);
 
     // 4. Download do JSON de relatório consolidado
@@ -399,14 +484,13 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                     </h3>
                                     {loadingTelemetry ? (
                                         <div className="text-center text-xs text-slate-500 py-16">Carregando telemetria...</div>
-                                    ) : comparisonThroughputData.length > 0 ? (
-                                        <Chart
-                                            chartType="LineChart"
-                                            data={comparisonThroughputData}
-                                            options={comparisonChartOptions}
-                                            width="100%"
-                                            height="250px"
-                                        />
+                                    ) : comparisonThroughputData !== null ? (
+                                        <div className="w-full h-[250px]">
+                                            <Line
+                                                data={comparisonThroughputData}
+                                                options={comparisonChartOptionsJS}
+                                            />
+                                        </div>
                                     ) : (
                                         <div className="text-center text-xs text-slate-500 py-16">Dados de telemetria indisponíveis para comparação.</div>
                                     )}
@@ -763,22 +847,15 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                     <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-4 space-y-4">
                                         <h3 className="text-sm font-semibold text-slate-300">Curvas de Desempenho (Telemetria do Ensaio)</h3>
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                            {selectedTelemetry.throughput?.length > 0 ? (
+                                            {selectedThroughputChartData !== null ? (
                                                 <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg">
                                                     <h4 className="text-xs text-slate-400 font-medium mb-2 text-center">Vazão de Comandos (ops/seg)</h4>
-                                                    <Chart
-                                                        chartType="LineChart"
-                                                        data={selectedThroughputChartData}
-                                                        options={{
-                                                            ...comparisonChartOptions,
-                                                            colors: ["#3b82f6"],
-                                                            chartArea: { width: "80%", height: "70%" },
-                                                            hAxis: { ...comparisonChartOptions.hAxis, title: "Tempo (s)" },
-                                                            vAxis: { ...comparisonChartOptions.vAxis, title: "ops/seg" }
-                                                        }}
-                                                        width="100%"
-                                                        height="180px"
-                                                    />
+                                                    <div className="w-full h-[180px]">
+                                                        <Line
+                                                            data={selectedThroughputChartData}
+                                                            options={historyChartOptionsJS("ops/seg")}
+                                                        />
+                                                    </div>
                                                 </div>
                                             ) : (
                                                 <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg flex items-center justify-center h-[216px]">
@@ -790,35 +867,21 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                                                 <>
                                                     <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg">
                                                         <h4 className="text-xs text-slate-400 font-medium mb-2 text-center">Uso de CPU (%)</h4>
-                                                        <Chart
-                                                            chartType="LineChart"
-                                                            data={selectedCpuChartData}
-                                                            options={{
-                                                                ...comparisonChartOptions,
-                                                                colors: ["#ef4444"],
-                                                                chartArea: { width: "80%", height: "70%" },
-                                                                hAxis: { ...comparisonChartOptions.hAxis, title: "Tempo (s)" },
-                                                                vAxis: { ...comparisonChartOptions.vAxis, title: "CPU (%)" }
-                                                            }}
-                                                            width="100%"
-                                                            height="180px"
-                                                        />
+                                                        <div className="w-full h-[180px]">
+                                                            <Line
+                                                                data={selectedCpuChartData!}
+                                                                options={historyChartOptionsJS("CPU (%)")}
+                                                            />
+                                                        </div>
                                                     </div>
                                                     <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg">
                                                         <h4 className="text-xs text-slate-400 font-medium mb-2 text-center">Consumo de RAM (MB)</h4>
-                                                        <Chart
-                                                            chartType="LineChart"
-                                                            data={selectedRamChartData}
-                                                            options={{
-                                                                ...comparisonChartOptions,
-                                                                colors: ["#10b981"],
-                                                                chartArea: { width: "80%", height: "70%" },
-                                                                hAxis: { ...comparisonChartOptions.hAxis, title: "Tempo (s)" },
-                                                                vAxis: { ...comparisonChartOptions.vAxis, title: "RAM (MB)" }
-                                                            }}
-                                                            width="100%"
-                                                            height="180px"
-                                                        />
+                                                        <div className="w-full h-[180px]">
+                                                            <Line
+                                                                data={selectedRamChartData!}
+                                                                options={historyChartOptionsJS("RAM (MB)")}
+                                                            />
+                                                        </div>
                                                     </div>
                                                 </>
                                             ) : (
@@ -1058,32 +1121,41 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                             <section className="break-inside-avoid">
                                 <h2 className="text-sm uppercase font-bold border-b border-black mb-2">Gráficos de Tendência e Telemetria Científica</h2>
                                 <div className="grid grid-cols-2 gap-4 my-2">
-                                    <div className="border border-black p-2 bg-white">
-                                        <Chart
-                                            chartType="LineChart"
-                                            data={selectedThroughputChartData}
-                                            options={printChartOptions("Vazão de Comandos ao Longo do Tempo", "Vazão (ops/seg)", "#1e3a8a")}
-                                            width="100%"
-                                            height="130px"
-                                        />
+                                    <div className="border border-black p-2 bg-white" style={{ height: "130px" }}>
+                                        {selectedThroughputChartData !== null ? (
+                                            <Line
+                                                data={selectedThroughputChartData}
+                                                options={printChartOptionsJS("Vazão de Comandos ao Longo do Tempo", "Vazão (ops/seg)")}
+                                                width="100%"
+                                                height="100%"
+                                            />
+                                        ) : (
+                                            <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
+                                        )}
                                     </div>
-                                    <div className="border border-black p-2 bg-white">
-                                        <Chart
-                                            chartType="LineChart"
-                                            data={selectedCpuChartData}
-                                            options={printChartOptions("Perfil de Uso de CPU ao Longo do Tempo", "CPU (%)", "#b91c1c")}
-                                            width="100%"
-                                            height="130px"
-                                        />
+                                    <div className="border border-black p-2 bg-white" style={{ height: "130px" }}>
+                                        {selectedCpuChartData !== null ? (
+                                            <Line
+                                                data={selectedCpuChartData}
+                                                options={printChartOptionsJS("Perfil de Uso de CPU ao Longo do Tempo", "CPU (%)")}
+                                                width="100%"
+                                                height="100%"
+                                            />
+                                        ) : (
+                                            <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
+                                        )}
                                     </div>
-                                    <div className="border border-black p-2 bg-white col-span-2">
-                                        <Chart
-                                            chartType="LineChart"
-                                            data={selectedRamChartData}
-                                            options={printChartOptions("Perfil de Consumo de RAM ao Longo do Tempo", "RAM (MB)", "#047857")}
-                                            width="100%"
-                                            height="130px"
-                                        />
+                                    <div className="border border-black p-2 bg-white col-span-2" style={{ height: "130px" }}>
+                                        {selectedRamChartData !== null ? (
+                                            <Line
+                                                data={selectedRamChartData}
+                                                options={printChartOptionsJS("Perfil de Consumo de RAM ao Longo do Tempo", "RAM (MB)")}
+                                                width="100%"
+                                                height="100%"
+                                            />
+                                        ) : (
+                                            <div className="text-center text-xs text-slate-500 py-10">Aguardando dados...</div>
+                                        )}
                                     </div>
                                 </div>
                             </section>
