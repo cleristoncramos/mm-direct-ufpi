@@ -278,6 +278,48 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
         };
     }, [selectedRun]);
 
+    // Geração dinâmica e personalizada de textos para as Seções V e VI no PDF
+    const dynamicMethodologyText = useMemo(() => {
+        if (!selectedRun) return "";
+        const isMMDirect = selectedRun.metadata?.config?.instantRecoveryState === "ON";
+        const modeText = isMMDirect ? "MM-DIRECT (B-Tree)" : "Tradicional (AOF)";
+        const indexerInterval = selectedRun.metadata?.config?.indexerTimeInterval || "500";
+        const checkpointState = selectedRun.metadata?.config?.checkpointState || "OFF";
+        const checkpointInterval = selectedRun.metadata?.config?.checkpointTimeInterval || "60";
+        const memtierState = selectedRun.metadata?.config?.memtierBenchmarkState || "OFF";
+        const failureDelay = selectedRun.metadata?.config?.restartAfterTime || "120";
+
+        return `O objetivo deste ensaio (identificado como ${selectedRun.id}) consistiu em analisar o comportamento operacional e o desempenho temporal do banco de dados configurado no modo ${modeText}. Para instrumentação científica, os parâmetros estabelecidos compreenderam: intervalo do indexador de ${indexerInterval} μs, estado de checkpoint definido como ${checkpointState} (com intervalo de ${checkpointInterval}s), e aplicação de carga transacional via Memtier Benchmark ${memtierState === "ON" ? "habilitada" : "desabilitada"}. O desligamento físico (falha controlada) foi programado para ocorrer após ${failureDelay}s de atividade estável, servindo como marco central para o acionamento do processo de recuperação e amostragem física de recursos pelo coletor de telemetria.`;
+    }, [selectedRun]);
+
+    const dynamicConclusionText = useMemo(() => {
+        if (!selectedRun) return "";
+        const isMMDirect = selectedRun.metadata?.config?.instantRecoveryState === "ON";
+        const checkpointState = selectedRun.metadata?.config?.checkpointState || "OFF";
+        const checkpointInterval = selectedRun.metadata?.config?.checkpointTimeInterval || "60";
+        
+        const recoveryTime = selectedRun.results?.recoveryDurationSeconds 
+            ? `${formatPtBr(selectedRun.results.recoveryDurationSeconds, 3)}s` 
+            : "N/A";
+        const status = selectedRun.results?.status || "N/A";
+        const peakMemory = selectedRun.report?.memorySummary?.peakMemory 
+            ? `${formatPtBr(selectedRun.report.memorySummary.peakMemory, 1)} MB` 
+            : "N/A";
+        const throughput = selectedRun.report?.throughputSummary?.averageThroughput 
+            ? `${formatPtBr(selectedRun.report.throughputSummary.averageThroughput, 2)} ops/seg` 
+            : "N/A";
+
+        return `Os resultados coletados confirmam que o ensaio finalizou com status '${status}'. O tempo absoluto de recuperação medido foi de ${recoveryTime}, operando sob consumo de pico de memória de ${peakMemory}. A vazão média de transações alcançou a marca de ${throughput}. ${
+            isMMDirect 
+                ? `O uso da árvore indexada (B-Tree) MM-DIRECT confirmou a viabilidade de retorno imediato do status do banco, viabilizando o processamento de novas transações concorrentes enquanto as tuplas são restauradas sob demanda.` 
+                : `O ensaio no modo Tradicional (AOF) refletiu a sobrecarga e o tempo associado à recuperação sequencial clássica, onde nenhuma transação é aceita antes do processamento total do log.`
+        } ${
+            checkpointState === "OFF"
+                ? "Como recomendação para rodadas futuras, sugere-se a ativação de Checkpoints para comparar o impacto da persistência assíncrona contra a velocidade de rebuild da árvore."
+                : `A ativação de Checkpoints com intervalo de ${checkpointInterval}s demonstrou ser eficaz na contenção do crescimento dos logs, sugerindo que testes adicionais explorem o limiar ideal de persistência sob cargas de maior concorrência.`
+        }`;
+    }, [selectedRun]);
+
     const selectedCpuChartData = useMemo(() => {
         if (!selectedTelemetry || !selectedTelemetry.monitoring || selectedTelemetry.monitoring.length === 0) {
             return null;
@@ -1165,12 +1207,7 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                         <section className="break-inside-avoid">
                             <h2 className="text-sm uppercase font-bold border-b border-black mb-2">V. Metodologia Experimental</h2>
                             <p className="text-xs text-justify">
-                                O objetivo deste ensaio consiste em avaliar o desempenho temporal e a estabilidade da recuperação instantânea MM-DIRECT 
-                                em contraste com a recuperação baseada em log sequencial tradicional (AOF). O teste operacional submete a instância a 
-                                falhas simuladas durante operações contínuas de gravação e leitura promovidas pelo gerador de carga Memtier Benchmark. 
-                                Os indicadores analíticos primários computados compreendem o tempo necessário para aceitação de novas conexões (downtime real) 
-                                e o tempo total de reabastecimento físico do banco de dados na DRAM. A integridade do dataset é aferida por contagem de tuplas 
-                                e detecção de inconsistências lógicas pós-recuperação.
+                                {dynamicMethodologyText}
                             </p>
                         </section>
 
@@ -1178,12 +1215,7 @@ const HistoryPanel = ({ onBack }: HistoryPanelProps) => {
                         <section className="break-inside-avoid">
                             <h2 className="text-sm uppercase font-bold border-b border-black mb-2">VI. Conclusão e Próximos Passos</h2>
                             <p className="text-xs text-justify">
-                                Os resultados obtidos confirmam que o mecanismo de árvore indexada do MM-DIRECT possibilita a retomada operacional do banco de dados 
-                                em tempo reduzido de downtime se comparado ao Redis convencional, fornecendo disponibilidade instantânea em frações de segundo. 
-                                A vazão de comandos (throughput) observada é nula nos casos em que a carga externa do Memtier não foi ativada nas configurações, 
-                                o que corrobora a consistência dos dados de instrumentação com o setup planejado. Recomenda-se, para rodadas futuras, a calibração 
-                                sistemática do intervalo de varredura do indexador sob cargas volumétricas superiores e a ativação de checkpoints para avaliar o 
-                                trade-off entre overhead de escrita e tempo final de carregamento em DRAM.
+                                {dynamicConclusionText}
                             </p>
                         </section>
                     </div>
